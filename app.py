@@ -110,7 +110,6 @@ def cargar_datos():
     except Exception:
         df = pd.DataFrame()
     finally:
-        # Esto elimina el archivo temporal de tu disco inmediatamente después de leerlo en la memoria RAM
         if os.path.exists(ARCHIVO_TEMP_DRIVE):
             try:
                 os.remove(ARCHIVO_TEMP_DRIVE)
@@ -126,6 +125,10 @@ def cargar_datos():
     col_año = [c for c in df.columns if 'AÑO' in c.upper() or 'AÃ' in c.upper()]
     if col_año:
         df = df.rename(columns={col_año[0]: 'AÑO'})
+        
+    # [CORRECCIÓN]: Forzar que el AÑO en ventas sea numérico para que cruce bien
+    if 'AÑO' in df.columns:
+        df['AÑO'] = pd.to_numeric(df['AÑO'], errors='coerce').fillna(0).astype(int)
         
     df.columns = df.columns.str.strip()
     
@@ -189,6 +192,10 @@ def cargar_inventario():
         if col_año:
             df_inv = df_inv.rename(columns={col_año[0]: 'AÑO'})
             
+        # [CORRECCIÓN]: Limpiar caracteres ocultos (\r\n) y forzar que sea entero
+        if 'AÑO' in df_inv.columns:
+            df_inv['AÑO'] = pd.to_numeric(df_inv['AÑO'], errors='coerce').fillna(0).astype(int)
+            
         if 'DEPARTAMENTO' in df_inv.columns:
             df_inv['DEPARTAMENTO'] = df_inv['DEPARTAMENTO'].astype(str).str.strip().str.upper()
             df_inv['DEPARTAMENTO'] = df_inv['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
@@ -198,6 +205,12 @@ def cargar_inventario():
             
         if 'MES' in df_inv.columns:
             df_inv['MES'] = df_inv['MES'].astype(str).str.strip().str.upper()
+            
+        # [CORRECCIÓN]: Estandarizar nombre del almacén para cruzar con "Sucursal"
+        if 'NOMBRE DE ALMACEN' in df_inv.columns:
+            df_inv['SUCURSAL'] = df_inv['NOMBRE DE ALMACEN'].astype(str).str.upper().str.strip()
+            df_inv['SUCURSAL'] = df_inv['SUCURSAL'].str.replace('TIENDA ', '', regex=False)
+            df_inv['SUCURSAL'] = df_inv['SUCURSAL'].str.replace('SUCURSAL ', '', regex=False)
             
         if 'Valor' in df_inv.columns:
             df_inv['Valor'] = (
@@ -267,18 +280,15 @@ st.sidebar.header("Filtros de Análisis")
 if 'AÑO' not in df.columns:
     st.stop()
 
-# 1. Selector de Año
 anios_disponibles = sorted(df['AÑO'].dropna().unique(), reverse=True)
 año_sel = st.sidebar.selectbox("Año Seleccionado", anios_disponibles)
 
 if año_sel is None:
     st.stop()
 
-# Las opciones disponibles SIEMPRE serán todas las que existen en la base de datos para evitar bloqueos
 todas_sucursales = [s for s in orden_sucursales if s in df['SUCURSAL'].astype(str).unique()]
 todos_departamentos = [d for d in orden_departamentos if d in df['DEPARTAMENTO'].astype(str).unique()]
 
-# 2. Selector de Meses
 meses_sel = st.sidebar.multiselect(
     "Meses", 
     options=orden_meses, 
@@ -286,7 +296,6 @@ meses_sel = st.sidebar.multiselect(
     placeholder="Seleccione Meses..."
 )
 
-# 3. Selector de Sucursales
 sucursal_sel = st.sidebar.multiselect(
     "Sucursales", 
     options=todas_sucursales, 
@@ -294,7 +303,6 @@ sucursal_sel = st.sidebar.multiselect(
     placeholder="Seleccione Sucursales..."
 )
 
-# 4. Selector de Departamentos
 departamentos_sel = st.sidebar.multiselect(
     "Departamentos", 
     options=todos_departamentos, 
@@ -302,9 +310,7 @@ departamentos_sel = st.sidebar.multiselect(
     placeholder="Seleccione Departamentos..."
 )
 
-# Control defensivo ultra-simple: si se vacía un filtro, se pide seleccionarlo para continuar
 if not meses_sel or not sucursal_sel or not departamentos_sel:
-    
     with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("VENTAS TOTALES", "$ 0,00")
@@ -317,13 +323,12 @@ if not meses_sel or not sucursal_sel or not departamentos_sel:
     st.warning("⚠️ Debes seleccionar al menos un Mes, una Sucursal y un Departamento en la barra lateral para poder generar el reporte.")
     st.stop()
 
-# Filtro directo a la base de datos
 mask_mes = df['MES'].astype(str).isin(meses_sel)
 mask_sucursal = df['SUCURSAL'].astype(str).isin(sucursal_sel)
 mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
 
 mask_comun = mask_mes & mask_sucursal & mask_depto
-df_filtrado = df[(df['AÑO'] == año_sel) & mask_comun]
+df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 try:
     df_año_anterior = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun]
@@ -331,15 +336,38 @@ except ValueError:
     df_año_anterior = pd.DataFrame()
 
 
-# --- FILTROS COBERTURA MULTI-MES ---
+# --- FILTROS COBERTURA MULTI-MES (CORREGIDO) ---
 df_inv_filtrado = pd.DataFrame()
+df_venta_mes_ant = pd.DataFrame()
+
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
-    df_inv_base = df_inv[(df_inv['AÑO'] == año_sel) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))]
+    # 1. Aplicar filtros de año, departamento Y SUCURSAL al inventario
+    mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
+    if 'SUCURSAL' in df_inv.columns:
+        mask_inv_comun &= df_inv['SUCURSAL'].isin(sucursal_sel)
+        
+    df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
+        
+        # 2. Obtener la venta del MES ANTERIOR para calcular la cobertura real
+        idx_mes = orden_meses.index(ultimo_mes_existente)
+        if idx_mes > 0:
+            mes_anterior = orden_meses[idx_mes - 1]
+            df_venta_mes_ant = df[(df['AÑO'] == int(año_sel)) & (df['MES'] == mes_anterior) & mask_sucursal & mask_depto]
+        else:
+            # Si el mes es Enero, buscar Diciembre del año anterior
+            df_venta_mes_ant = df[(df['AÑO'] == int(año_sel) - 1) & (df['MES'] == 'DICIEMBRE') & mask_sucursal & mask_depto]
+
+if not df_venta_mes_ant.empty:
+    ventas_ant_agrupadas = df_venta_mes_ant.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+    ventas_ant_agrupadas = ventas_ant_agrupadas.rename(columns={'VENTA': 'VENTA_MES_ANT'})
+else:
+    ventas_ant_agrupadas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'VENTA_MES_ANT'])
+
 
 # -----------------------------------
 # PROCESAMIENTO MATRICIAL DE LOS DATOS
@@ -381,25 +409,36 @@ tabla_base = tabla_base[(tabla_base['VENTA'] > 0) | (tabla_base['META'] > 0) | (
 tabla_base['AVANCE'] = np.where(tabla_base['META'] > 0, (tabla_base['VENTA'] / tabla_base['META']) * 100, 0.0)
 tabla_base['EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)'] = np.where(tabla_base['M2'] > 0, tabla_base['VENTA'] / tabla_base['M2'], 0.0)
 
+# --- CRUCE DE COBERTURA CORREGIDO ---
 if not df_inv_filtrado.empty and 'Valor' in df_inv_filtrado.columns:
     inv_agrupado = df_inv_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['Valor'].sum().reset_index()
     tabla_base = pd.merge(tabla_base, inv_agrupado, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
-    tabla_base['Valor'] = pd.to_numeric(tabla_base['Valor'], errors='coerce').fillna(0.0)
-    tabla_base['COBERTURA'] = np.where(tabla_base['VENTA'] > 0, tabla_base['Valor'] / tabla_base['VENTA'], 0.0)
+    tabla_base = pd.merge(tabla_base, ventas_ant_agrupadas, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
+    
+    tabla_base['Valor'] = pd.to_numeric(tabla_base.get('Valor', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
+    tabla_base['VENTA_MES_ANT'] = pd.to_numeric(tabla_base.get('VENTA_MES_ANT', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
+    
+    # Formula: Valor del Inventario del Mes / Venta del Mes Anterior
+    tabla_base['COBERTURA'] = np.where(tabla_base['VENTA_MES_ANT'] > 0, tabla_base['Valor'] / tabla_base['VENTA_MES_ANT'], 0.0)
 else:
     tabla_base['Valor'] = 0.0
+    tabla_base['VENTA_MES_ANT'] = 0.0
     tabla_base['COBERTURA'] = np.nan
 
 tabla_base['ORDEN_REGISTRO'] = 0
 
 if not tabla_base.empty:
-    subtotales = tabla_base.groupby('DEPARTAMENTO', observed=True).agg({'VENTA': 'sum', 'META': 'sum', 'M2': 'sum', 'Valor': 'sum'}).reset_index()
+    agg_dict = {'VENTA': 'sum', 'META': 'sum', 'M2': 'sum', 'Valor': 'sum'}
+    if 'VENTA_MES_ANT' in tabla_base.columns:
+        agg_dict['VENTA_MES_ANT'] = 'sum'
+        
+    subtotales = tabla_base.groupby('DEPARTAMENTO', observed=True).agg(agg_dict).reset_index()
     subtotales['CATEGORIA'] = 'TOTAL DEPARTAMENTO'
     subtotales['AVANCE'] = np.where(subtotales['META'] > 0, (subtotales['VENTA'] / subtotales['META']) * 100, 0.0)
     subtotales['EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)'] = np.where(subtotales['M2'] > 0, subtotales['VENTA'] / subtotales['M2'], 0.0)
     
-    if not df_inv_filtrado.empty:
-        subtotales['COBERTURA'] = np.where(subtotales['VENTA'] > 0, subtotales['Valor'] / subtotales['VENTA'], 0.0)
+    if not df_inv_filtrado.empty and 'VENTA_MES_ANT' in subtotales.columns:
+        subtotales['COBERTURA'] = np.where(subtotales['VENTA_MES_ANT'] > 0, subtotales['Valor'] / subtotales['VENTA_MES_ANT'], 0.0)
     else:
         subtotales['COBERTURA'] = np.nan
     subtotales['ORDEN_REGISTRO'] = 1
@@ -413,8 +452,10 @@ total_g_avance = (total_g_venta / total_g_meta) * 100 if total_g_meta > 0 else 0
 total_g_eficiencia = total_g_venta / total_g_m2 if total_g_m2 > 0 else 0.0
 
 total_g_valor = tabla_base["Valor"].sum() if not tabla_base.empty else 0.0
+total_g_venta_ant = tabla_base["VENTA_MES_ANT"].sum() if not tabla_base.empty and 'VENTA_MES_ANT' in tabla_base.columns else 0.0
+
 if not df_inv_filtrado.empty:
-    total_g_cobertura = total_g_valor / total_g_venta if total_g_venta > 0 else 0.0
+    total_g_cobertura = total_g_valor / total_g_venta_ant if total_g_venta_ant > 0 else 0.0
 else:
     total_g_cobertura = np.nan
 
@@ -439,9 +480,12 @@ if not tabla_base.empty:
         ordered=True
     )
     tabla_final = tabla_final.sort_values(by=["DEPARTAMENTO", "ORDEN_REGISTRO", "VENTA"], ascending=[True, True, False])
-    tabla_final = tabla_final.drop(columns=['M2', 'ORDEN_REGISTRO', 'Valor'])
+    tabla_final = tabla_final.drop(columns=['M2', 'ORDEN_REGISTRO', 'Valor'], errors='ignore')
+    if 'VENTA_MES_ANT' in tabla_final.columns:
+        tabla_final = tabla_final.drop(columns=['VENTA_MES_ANT'])
 else:
-    tabla_final = fila_total_general.drop(columns=['M2', 'ORDEN_REGISTRO', 'Valor'], errors='ignore')
+    columnas_drop = ['M2', 'ORDEN_REGISTRO', 'Valor', 'VENTA_MES_ANT']
+    tabla_final = fila_total_general.drop(columns=[c for c in columnas_drop if c in fila_total_general.columns], errors='ignore')
 
 df_para_excel = tabla_final.copy()
 df_render_app = tabla_final.copy()
