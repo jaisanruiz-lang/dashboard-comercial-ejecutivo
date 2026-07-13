@@ -126,7 +126,6 @@ def cargar_datos():
     if col_año:
         df = df.rename(columns={col_año[0]: 'AÑO'})
         
-    # [CORRECCIÓN]: Forzar que el AÑO en ventas sea numérico para que cruce bien
     if 'AÑO' in df.columns:
         df['AÑO'] = pd.to_numeric(df['AÑO'], errors='coerce').fillna(0).astype(int)
         
@@ -192,7 +191,6 @@ def cargar_inventario():
         if col_año:
             df_inv = df_inv.rename(columns={col_año[0]: 'AÑO'})
             
-        # [CORRECCIÓN]: Limpiar caracteres ocultos (\r\n) y forzar que sea entero
         if 'AÑO' in df_inv.columns:
             df_inv['AÑO'] = pd.to_numeric(df_inv['AÑO'], errors='coerce').fillna(0).astype(int)
             
@@ -206,7 +204,6 @@ def cargar_inventario():
         if 'MES' in df_inv.columns:
             df_inv['MES'] = df_inv['MES'].astype(str).str.strip().str.upper()
             
-        # [CORRECCIÓN]: Estandarizar nombre del almacén para cruzar con "Sucursal"
         if 'NOMBRE DE ALMACEN' in df_inv.columns:
             df_inv['SUCURSAL'] = df_inv['NOMBRE DE ALMACEN'].astype(str).str.upper().str.strip()
             df_inv['SUCURSAL'] = df_inv['SUCURSAL'].str.replace('TIENDA ', '', regex=False)
@@ -336,12 +333,12 @@ except ValueError:
     df_año_anterior = pd.DataFrame()
 
 
-# --- FILTROS COBERTURA MULTI-MES (CORREGIDO) ---
+# --- FILTROS COBERTURA MULTI-MES (LÓGICA ACTUALIZADA) ---
 df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
-    # 1. Aplicar filtros de año, departamento Y SUCURSAL al inventario
+    # 1. Aplicar filtros al inventario base
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
     if 'SUCURSAL' in df_inv.columns:
         mask_inv_comun &= df_inv['SUCURSAL'].isin(sucursal_sel)
@@ -350,17 +347,26 @@ if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.co
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
+        # El inventario será del ÚLTIMO mes seleccionado disponible
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
-        # 2. Obtener la venta del MES ANTERIOR para calcular la cobertura real
-        idx_mes = orden_meses.index(ultimo_mes_existente)
-        if idx_mes > 0:
-            mes_anterior = orden_meses[idx_mes - 1]
-            df_venta_mes_ant = df[(df['AÑO'] == int(año_sel)) & (df['MES'] == mes_anterior) & mask_sucursal & mask_depto]
-        else:
-            # Si el mes es Enero, buscar Diciembre del año anterior
-            df_venta_mes_ant = df[(df['AÑO'] == int(año_sel) - 1) & (df['MES'] == 'DICIEMBRE') & mask_sucursal & mask_depto]
+        # 2. Consolidar ventas de TODOS los meses anteriores a los seleccionados
+        frames_ant = []
+        for m_sel in meses_sel:
+            idx = orden_meses.index(m_sel)
+            if idx > 0:
+                m_ant = orden_meses[idx - 1]
+                a_ant = int(año_sel)
+            else:
+                m_ant = 'DICIEMBRE'
+                a_ant = int(año_sel) - 1
+                
+            frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & mask_sucursal & mask_depto]
+            frames_ant.append(frame_ventas)
+        
+        if frames_ant:
+            df_venta_mes_ant = pd.concat(frames_ant, ignore_index=True)
 
 if not df_venta_mes_ant.empty:
     ventas_ant_agrupadas = df_venta_mes_ant.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
@@ -409,7 +415,7 @@ tabla_base = tabla_base[(tabla_base['VENTA'] > 0) | (tabla_base['META'] > 0) | (
 tabla_base['AVANCE'] = np.where(tabla_base['META'] > 0, (tabla_base['VENTA'] / tabla_base['META']) * 100, 0.0)
 tabla_base['EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)'] = np.where(tabla_base['M2'] > 0, tabla_base['VENTA'] / tabla_base['M2'], 0.0)
 
-# --- CRUCE DE COBERTURA CORREGIDO ---
+# --- CRUCE Y CÁLCULO DE COBERTURA ---
 if not df_inv_filtrado.empty and 'Valor' in df_inv_filtrado.columns:
     inv_agrupado = df_inv_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['Valor'].sum().reset_index()
     tabla_base = pd.merge(tabla_base, inv_agrupado, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
@@ -418,7 +424,7 @@ if not df_inv_filtrado.empty and 'Valor' in df_inv_filtrado.columns:
     tabla_base['Valor'] = pd.to_numeric(tabla_base.get('Valor', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
     tabla_base['VENTA_MES_ANT'] = pd.to_numeric(tabla_base.get('VENTA_MES_ANT', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
     
-    # Formula: Valor del Inventario del Mes / Venta del Mes Anterior
+    # Formula real: Inventario del último mes cargado / Suma total de las ventas anteriores
     tabla_base['COBERTURA'] = np.where(tabla_base['VENTA_MES_ANT'] > 0, tabla_base['Valor'] / tabla_base['VENTA_MES_ANT'], 0.0)
 else:
     tabla_base['Valor'] = 0.0
