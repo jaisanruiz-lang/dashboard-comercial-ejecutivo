@@ -333,36 +333,39 @@ except ValueError:
     df_año_anterior = pd.DataFrame()
 
 
-# --- FILTROS COBERTURA MULTI-MES (LÓGICA ACTUALIZADA) ---
+# --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
-    # 1. Aplicar filtros al inventario base
+    # 1. Aplicar filtros al inventario a nivel nacional (sin filtrar por sucursal)
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
-    if 'SUCURSAL' in df_inv.columns:
-        mask_inv_comun &= df_inv['SUCURSAL'].isin(sucursal_sel)
-        
     df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
-        # El inventario será del ÚLTIMO mes seleccionado disponible
+        # El inventario corresponde a la foto del ÚLTIMO mes seleccionado
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
-        # 2. Consolidar ventas de TODOS los meses anteriores a los seleccionados
-        frames_ant = []
-        for m_sel in meses_sel:
-            idx = orden_meses.index(m_sel)
-            if idx > 0:
-                m_ant = orden_meses[idx - 1]
-                a_ant = int(año_sel)
+        # 2. Consolidar ventas globales de los meses anteriores seleccionados
+        idx_ultimo = orden_meses.index(ultimo_mes_existente)
+        meses_anteriores_en_seleccion = [m for m in meses_sel if orden_meses.index(m) < idx_ultimo]
+        
+        if len(meses_anteriores_en_seleccion) == 0:
+            # Si solo se seleccionó un mes, se usa el mes calendario inmediatamente anterior
+            if idx_ultimo > 0:
+                meses_para_ventas = [(int(año_sel), orden_meses[idx_ultimo - 1])]
             else:
-                m_ant = 'DICIEMBRE'
-                a_ant = int(año_sel) - 1
-                
-            frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & mask_sucursal & mask_depto]
+                meses_para_ventas = [(int(año_sel) - 1, 'DICIEMBRE')]
+        else:
+            # Si se seleccionaron múltiples meses, se suman las ventas de los meses seleccionados previos al último
+            meses_para_ventas = [(int(año_sel), m) for m in meses_anteriores_en_seleccion]
+            
+        frames_ant = []
+        for a_ant, m_ant in meses_para_ventas:
+            # Ventas globales (sin filtrar por sucursal) para mantener consistencia nacional
+            frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel))]
             frames_ant.append(frame_ventas)
         
         if frames_ant:
