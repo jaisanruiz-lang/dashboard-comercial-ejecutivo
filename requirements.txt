@@ -1,0 +1,6 @@
+streamlit
+pandas
+openpyxl
+gdown
+xhtml2pdf
+jinja2
