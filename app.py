@@ -225,26 +225,17 @@ def cargar_inventario():
 @st.cache_data(ttl=60)
 def cargar_metas():
     df_meta = pd.DataFrame()
-    archivo_xlsx = "META 2026.xlsx"
     archivo_csv = "META 2026.csv"
     
     try:
-        if os.path.exists(archivo_xlsx):
-            xls = pd.ExcelFile(archivo_xlsx)
-            df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-        elif os.path.exists(archivo_csv):
-            try:
-                df_meta = pd.read_csv(archivo_csv, sep=";", encoding="latin-1")
-                # Si las columnas no se separaron bien, probamos con coma
-                if len(df_meta.columns) < 2:
-                    df_meta = pd.read_csv(archivo_csv, sep=",", encoding="latin-1")
-            except Exception:
-                pass
+        if os.path.exists(archivo_csv):
+            df_meta = pd.read_csv(archivo_csv, sep=";", encoding="latin-1")
+            if len(df_meta.columns) < 3:
+                df_meta = pd.read_csv(archivo_csv, sep=",", encoding="latin-1")
             
         if not df_meta.empty:
             df_meta.columns = df_meta.columns.str.strip()
             
-            # Ubicamos dinámicamente la columna del mes/etiqueta
             col_mes = None
             for c in df_meta.columns:
                 if 'ETIQUETA' in c.upper() or 'MES' in c.upper():
@@ -254,7 +245,6 @@ def cargar_metas():
             if col_mes:
                 df_meta['MES'] = df_meta[col_mes].astype(str).str.strip().str.upper()
             
-            # Limpieza BLINDADA de números (elimina -, $, espacios, puntos y transforma comas)
             for col in df_meta.columns:
                 if col not in [col_mes, 'MES'] and col_mes is not None:
                     if df_meta[col].dtype == object:
@@ -288,6 +278,8 @@ df = df.rename(columns={
 
 if 'CATEGORIA' in df.columns:
     df['CATEGORIA'] = df['CATEGORIA'].astype(str).str.strip().str.upper()
+if 'DEPARTAMENTO' in df.columns:
+    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].astype(str).str.strip().str.upper()
 
 # -----------------------------------
 # ESTRUCTURA DE ORDENAMIENTO ESTRICTO
@@ -403,25 +395,24 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
             real_col_name = cols_meta_upper[col_meta]
             meta_total_asignada += df_meta_filtrada[real_col_name].sum()
 
-    # Base para calcular los pesos de distribución usando TODO el portafolio 
+    # Base para calcular los pesos de distribución
     mask_comun_pesos = mask_mes & mask_sucursal 
     df_pesos = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_pesos]
     
-    # BACKUP INTELIGENTE: Si no hay ventas el año anterior, calculamos el peso con base en lo vendido este año
     if df_pesos.empty or df_pesos['VENTA'].sum() <= 0:
         df_pesos = df[(df['AÑO'] == int(año_sel)) & mask_comun_pesos]
 
     if not df_pesos.empty:
         tabla_pesos = df_pesos.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-        # Anulamos devoluciones para no distorsionar proporciones
+        tabla_pesos['DEPARTAMENTO'] = tabla_pesos['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+        tabla_pesos['CATEGORIA'] = tabla_pesos['CATEGORIA'].astype(str).str.strip().str.upper()
+        
         tabla_pesos['VENTA'] = np.where(tabla_pesos['VENTA'] > 0, tabla_pesos['VENTA'], 0)
         ventas_totales_peso = tabla_pesos['VENTA'].sum()
         
         if ventas_totales_peso > 0:
             tabla_pesos['PESO'] = tabla_pesos['VENTA'] / ventas_totales_peso
             tabla_pesos['META'] = tabla_pesos['PESO'] * meta_total_asignada
-            
-            # Filtramos solo los departamentos seleccionados por el usuario para armar la tabla
             tabla_metas_distribuidas = tabla_pesos[tabla_pesos['DEPARTAMENTO'].isin(departamentos_sel)][['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
 
@@ -459,6 +450,8 @@ if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.co
 
 if not df_venta_mes_ant.empty:
     ventas_ant_agrupadas = df_venta_mes_ant.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+    ventas_ant_agrupadas['DEPARTAMENTO'] = ventas_ant_agrupadas['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+    ventas_ant_agrupadas['CATEGORIA'] = ventas_ant_agrupadas['CATEGORIA'].astype(str).str.strip().str.upper()
     ventas_ant_agrupadas = ventas_ant_agrupadas.rename(columns={'VENTA': 'VENTA_MES_ANT'})
 else:
     ventas_ant_agrupadas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'VENTA_MES_ANT'])
@@ -470,6 +463,8 @@ else:
 df_m2_sel = pd.DataFrame()
 if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
     df_m2_sel = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
+    df_m2_sel['DEPARTAMENTO'] = df_m2_sel['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+    df_m2_sel['CATEGORIA'] = df_m2_sel['CATEGORIA'].astype(str).str.strip().str.upper()
 
 if not tabla_metas_distribuidas.empty:
     tabla_ant = tabla_metas_distribuidas.copy()
@@ -478,6 +473,8 @@ else:
 
 if not df_filtrado.empty and 'DEPARTAMENTO' in df_filtrado.columns and 'CATEGORIA' in df_filtrado.columns:
     tabla_actual = df_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+    tabla_actual['DEPARTAMENTO'] = tabla_actual['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+    tabla_actual['CATEGORIA'] = tabla_actual['CATEGORIA'].astype(str).str.strip().str.upper()
 else:
     tabla_actual = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'VENTA'])
 
@@ -505,6 +502,9 @@ tabla_base['EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)'] = np.where(tabla_base['M2
 # --- CRUCE Y CÁLCULO DE COBERTURA ---
 if not df_inv_filtrado.empty and 'Valor' in df_inv_filtrado.columns:
     inv_agrupado = df_inv_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['Valor'].sum().reset_index()
+    inv_agrupado['DEPARTAMENTO'] = inv_agrupado['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+    inv_agrupado['CATEGORIA'] = inv_agrupado['CATEGORIA'].astype(str).str.strip().str.upper()
+    
     tabla_base = pd.merge(tabla_base, inv_agrupado, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
     tabla_base = pd.merge(tabla_base, ventas_ant_agrupadas, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
     
@@ -539,7 +539,7 @@ else:
 
 total_g_venta = tabla_base["VENTA"].sum() if not tabla_base.empty else 0.0
 total_g_meta = subtotales["META"].sum() if not subtotales.empty else 0.0
-total_g_m2 = subtotales["M2"].sum() if not subtotales.empty else 0.0
+total_g_m2 = subtotales["M2"].sum() if not tabla_base.empty else 0.0
 total_g_avance = (total_g_venta / total_g_meta) * 100 if total_g_meta > 0 else 0.0
 total_g_eficiencia = total_g_venta / total_g_m2 if total_g_m2 > 0 else 0.0
 
