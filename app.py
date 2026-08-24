@@ -225,41 +225,45 @@ def cargar_inventario():
 @st.cache_data(ttl=60)
 def cargar_metas():
     df_meta = pd.DataFrame()
-    archivo_csv = "META 2026.csv"
-    archivo_xlsx = "META 2026.xlsx"
+    archivos_posibles = ["META 2026.csv", "META_2026.csv", "META 2026.xlsx", "META_2026.xlsx"]
     
-    try:
-        if os.path.exists(archivo_csv):
-            df_meta = pd.read_csv(archivo_csv, sep=";", encoding="latin-1")
-            if len(df_meta.columns) < 3:
-                df_meta = pd.read_csv(archivo_csv, sep=",", encoding="latin-1")
-        elif os.path.exists(archivo_xlsx):
-            xls = pd.ExcelFile(archivo_xlsx)
-            df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-            
-        if not df_meta.empty:
-            df_meta.columns = df_meta.columns.str.strip()
-            col_mes = None
-            for c in df_meta.columns:
-                if 'ETIQUETA' in c.upper() or 'MES' in c.upper():
-                    col_mes = c
+    for archivo in archivos_posibles:
+        if os.path.exists(archivo):
+            try:
+                if archivo.endswith('.csv'):
+                    df_meta = pd.read_csv(archivo, sep=";", encoding="latin-1")
+                    if len(df_meta.columns) < 3:
+                        df_meta = pd.read_csv(archivo, sep=",", encoding="latin-1")
+                elif archivo.endswith('.xlsx'):
+                    xls = pd.ExcelFile(archivo)
+                    df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+                if not df_meta.empty:
                     break
-            if col_mes:
-                df_meta['MES'] = df_meta[col_mes].astype(str).str.strip().str.upper()
+            except Exception:
+                pass
             
-            for col in df_meta.columns:
-                if col not in [col_mes, 'MES'] and col_mes is not None:
-                    if df_meta[col].dtype == object:
-                        df_meta[col] = (df_meta[col]
-                                        .astype(str)
-                                        .str.replace(r'\s+', '', regex=True)
-                                        .str.replace('$', '', regex=False)
-                                        .str.replace('.', '', regex=False)
-                                        .str.replace(',', '.', regex=False)
-                                        .str.replace('-', '0', regex=False))
-                    df_meta[col] = pd.to_numeric(df_meta[col], errors='coerce').fillna(0.0)
-    except Exception:
-        pass
+    if not df_meta.empty:
+        df_meta.columns = df_meta.columns.str.strip()
+        col_mes = None
+        for c in df_meta.columns:
+            if 'ETIQUETA' in c.upper() or 'MES' in c.upper():
+                col_mes = c
+                break
+        if col_mes:
+            df_meta['MES'] = df_meta[col_mes].astype(str).str.strip().str.upper()
+        
+        for col in df_meta.columns:
+            if col not in [col_mes, 'MES'] and col_mes is not None:
+                if df_meta[col].dtype == object:
+                    df_meta[col] = (df_meta[col]
+                                    .astype(str)
+                                    .str.replace(r'\s+', '', regex=True)
+                                    .str.replace('$', '', regex=False)
+                                    .str.replace('.', '', regex=False)
+                                    .str.replace(',', '.', regex=False)
+                                    .str.replace('-', '0', regex=False))
+                df_meta[col] = pd.to_numeric(df_meta[col], errors='coerce').fillna(0.0)
+                
     return df_meta
 
 df, df_m2 = cargar_datos()
@@ -428,7 +432,7 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
                 
             tabla_metas_distribuidas = tabla_meta_final[['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
-    # RESPALDO A PRUEBA DE FALLOS: Si por falta de transacciones la tabla quedó vacía, distribuimos equitativamente usando M2 o uniformente
+    # RESPALDO A PRUEBA DE FALLOS: Si la tabla quedó vacía, distribuimos usando M2 o uniformemente
     if tabla_metas_distribuidas.empty and meta_total_asignada > 0:
         if not df_m2.empty:
             df_m2_filt = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
