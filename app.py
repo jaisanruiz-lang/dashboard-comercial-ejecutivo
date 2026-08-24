@@ -225,7 +225,7 @@ def cargar_inventario():
 @st.cache_data(ttl=60)
 def cargar_metas():
     df_meta = pd.DataFrame()
-    archivo_csv = "META 2026.csv"
+    archivo_csv = "META_2026.csv"
     
     try:
         if os.path.exists(archivo_csv):
