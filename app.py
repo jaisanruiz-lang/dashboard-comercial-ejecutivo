@@ -243,16 +243,12 @@ def cargar_metas():
             
     if not df_meta.empty:
         df_meta.columns = df_meta.columns.str.strip()
-        col_mes = None
-        for c in df_meta.columns:
-            if 'ETIQUETA' in c.upper() or 'MES' in c.upper():
-                col_mes = c
-                break
-        if col_mes:
-            df_meta['MES'] = df_meta[col_mes].astype(str).str.strip().str.upper()
+        # Forzar que la primera columna sea siempre 'MES' de forma robusta
+        primera_col = df_meta.columns[0]
+        df_meta['MES'] = df_meta[primera_col].astype(str).str.strip().str.upper()
         
         for col in df_meta.columns:
-            if col not in [col_mes, 'MES'] and col_mes is not None:
+            if col not in [primera_col, 'MES']:
                 if df_meta[col].dtype == object:
                     df_meta[col] = (df_meta[col]
                                     .astype(str)
@@ -389,7 +385,7 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
         'DISTRIBUIDORES': 'DISTRIBUIDORES',
     }
     
-    df_meta_filtrada = df_metas_global[df_meta_global['MES'].isin(meses_sel)]
+    df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
     cols_meta_upper = {str(c).upper().strip(): c for c in df_metas_global.columns}
     
     for suc in sucursal_sel:
@@ -431,7 +427,7 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
                 
             tabla_metas_distribuidas = tabla_meta_final[['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
-    # RESPALDO TOTAL A PRUEBA DE FALLOS: Si la tabla quedó vacía, distribuimos la meta uniformemente entre las categorías de los departamentos seleccionados
+    # RESPALDO TOTAL A PRUEBA DE FALLOS: Si la tabla quedó vacía, distribuimos la meta uniformemente
     if tabla_metas_distribuidas.empty and meta_total_asignada > 0:
         df_actual_activos = df[(df['AÑO'] == int(año_sel)) & mask_depto].groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True).size().reset_index()[['DEPARTAMENTO', 'CATEGORIA']]
         if df_actual_activos.empty:
