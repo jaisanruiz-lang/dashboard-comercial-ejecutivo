@@ -153,28 +153,27 @@ def cargar_datos():
         df['DEPARTAMENTO'] = df['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
     
     archivo_m2 = "METROS CUADRADOS POR CATEGORIA.csv"
-    if not os.path.exists(archivo_m2):
-        return df, pd.DataFrame()
-        
-    df_m2 = pd.read_csv(archivo_m2, encoding="latin-1", sep=";")
-    df_m2.columns = df_m2.columns.str.strip()
-    
-    if 'DEPARTAMENTO' in df_m2.columns:
-        df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].ffill().astype(str).str.strip().str.upper()
-        df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
-        
-    if 'CATEGORIA' in df_m2.columns:
-        df_m2['CATEGORIA'] = df_m2['CATEGORIA'].astype(str).str.strip().str.upper()
-        df_m2 = df_m2[(df_m2['CATEGORIA'] != 'NAN') & (df_m2['CATEGORIA'] != '')]
-    
-    if 'METROS' in df_m2.columns:
-        df_m2['METROS'] = (
-            df_m2['METROS']
-            .astype(str)
-            .str.replace(r'\s+', '', regex=True)
-            .str.replace(',', '.', regex=False)
-        )
-        df_m2['METROS'] = pd.to_numeric(df_m2['METROS'], errors='coerce').fillna(0.0)
+    df_m2 = pd.DataFrame()
+    if os.path.exists(archivo_m2):
+        try:
+            df_m2 = pd.read_csv(archivo_m2, encoding="latin-1", sep=";")
+            df_m2.columns = df_m2.columns.str.strip()
+            if 'DEPARTAMENTO' in df_m2.columns:
+                df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].ffill().astype(str).str.strip().str.upper()
+                df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
+            if 'CATEGORIA' in df_m2.columns:
+                df_m2['CATEGORIA'] = df_m2['CATEGORIA'].astype(str).str.strip().str.upper()
+                df_m2 = df_m2[(df_m2['CATEGORIA'] != 'NAN') & (df_m2['CATEGORIA'] != '')]
+            if 'METROS' in df_m2.columns:
+                df_m2['METROS'] = (
+                    df_m2['METROS']
+                    .astype(str)
+                    .str.replace(r'\s+', '', regex=True)
+                    .str.replace(',', '.', regex=False)
+                )
+                df_m2['METROS'] = pd.to_numeric(df_m2['METROS'], errors='coerce').fillna(0.0)
+        except Exception:
+            pass
         
     return df, df_m2
 
@@ -375,7 +374,7 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CÁLCULO DINÁMICO DE LA META (BLINDADO Y A PRUEBA DE VENTAS VACÍAS)
+# CÁLCULO DINÁMICO DE LA META (BLINDADO Y A PRUEBA DE FALLOS)
 # -------------------------------------------------------------------------
 meta_total_asignada = 0.0
 tabla_metas_distribuidas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
@@ -390,7 +389,7 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
         'DISTRIBUIDORES': 'DISTRIBUIDORES',
     }
     
-    df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
+    df_meta_filtrada = df_metas_global[df_meta_global['MES'].isin(meses_sel)]
     cols_meta_upper = {str(c).upper().strip(): c for c in df_metas_global.columns}
     
     for suc in sucursal_sel:
@@ -432,17 +431,14 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
                 
             tabla_metas_distribuidas = tabla_meta_final[['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
-    # RESPALDO A PRUEBA DE FALLOS: Si la tabla quedó vacía, distribuimos usando M2 o uniformemente
+    # RESPALDO TOTAL A PRUEBA DE FALLOS: Si la tabla quedó vacía, distribuimos la meta uniformemente entre las categorías de los departamentos seleccionados
     if tabla_metas_distribuidas.empty and meta_total_asignada > 0:
-        if not df_m2.empty:
-            df_m2_filt = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
-            if not df_m2_filt.empty:
-                total_m2 = df_m2_filt['METROS'].sum()
-                if total_m2 > 0:
-                    df_m2_filt['META'] = (df_m2_filt['METROS'] / total_m2) * meta_total_asignada
-                else:
-                    df_m2_filt['META'] = meta_total_asignada / len(df_m2_filt)
-                tabla_metas_distribuidas = df_m2_filt[['DEPARTAMENTO', 'CATEGORIA', 'META']]
+        df_actual_activos = df[(df['AÑO'] == int(año_sel)) & mask_depto].groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True).size().reset_index()[['DEPARTAMENTO', 'CATEGORIA']]
+        if df_actual_activos.empty:
+            df_actual_activos = df[mask_depto].groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True).size().reset_index()[['DEPARTAMENTO', 'CATEGORIA']]
+        if not df_actual_activos.empty:
+            df_actual_activos['META'] = meta_total_asignada / len(df_actual_activos)
+            tabla_metas_distribuidas = df_actual_activos[['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
