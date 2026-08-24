@@ -371,7 +371,7 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CÁLCULO DINÁMICO DE LA META (DISTRIBUCIÓN 2025 CON REUBICACIÓN DE FALTANTES)
+# CÁLCULO DINÁMICO DE LA META (BLINDADO Y A PRUEBA DE VENTAS VACÍAS)
 # -------------------------------------------------------------------------
 meta_total_asignada = 0.0
 tabla_metas_distribuidas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
@@ -396,7 +396,7 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
             real_col_name = cols_meta_upper[col_meta]
             meta_total_asignada += df_meta_filtrada[real_col_name].sum()
 
-    # 1. Obtener ventas del año anterior (2025) para los filtros seleccionados
+    # Intentar obtener pesos del año anterior (2025)
     mask_comun_pesos = mask_mes & mask_sucursal 
     df_pesos = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_pesos]
     
@@ -413,25 +413,32 @@ if not df_metas_global.empty and 'MES' in df_metas_global.columns:
             tabla_pesos['PESO'] = tabla_pesos['VENTA'] / ventas_totales_peso
             tabla_pesos['META'] = tabla_pesos['PESO'] * meta_total_asignada
             
-            # Ventas reales actuales 2026 para identificar categorías existentes este año
             df_act_2026 = df[(df['AÑO'] == int(año_sel)) & mask_comun_pesos].groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
             df_act_2026['KEY'] = df_act_2026['DEPARTAMENTO'] + "||" + df_act_2026['CATEGORIA']
             
             tabla_pesos['KEY'] = tabla_pesos['DEPARTAMENTO'] + "||" + tabla_pesos['CATEGORIA']
             existentes_2026 = set(df_act_2026['KEY'])
             
-            # Separar metas de categorías presentes vs ausentes en 2026
             meta_ausentes = tabla_pesos[~tabla_pesos['KEY'].isin(existentes_2026)]['META'].sum()
-            
-            # Quedarnos solo con las categorías de la selección actual del usuario
             tabla_meta_final = tabla_pesos[tabla_pesos['DEPARTAMENTO'].isin(departamentos_sel)].copy()
             
             if meta_ausentes > 0 and not tabla_meta_final.empty:
-                # Encontrar la categoría de mayor valor (venta) en el 2026 dentro de las seleccionadas
                 max_row_idx = tabla_meta_final['VENTA'].idxmax()
                 tabla_meta_final.loc[max_row_idx, 'META'] += meta_ausentes
                 
             tabla_metas_distribuidas = tabla_meta_final[['DEPARTAMENTO', 'CATEGORIA', 'META']]
+
+    # RESPALDO A PRUEBA DE FALLOS: Si por falta de transacciones la tabla quedó vacía, distribuimos equitativamente usando M2 o uniformente
+    if tabla_metas_distribuidas.empty and meta_total_asignada > 0:
+        if not df_m2.empty:
+            df_m2_filt = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
+            if not df_m2_filt.empty:
+                total_m2 = df_m2_filt['METROS'].sum()
+                if total_m2 > 0:
+                    df_m2_filt['META'] = (df_m2_filt['METROS'] / total_m2) * meta_total_asignada
+                else:
+                    df_m2_filt['META'] = meta_total_asignada / len(df_m2_filt)
+                tabla_metas_distribuidas = df_m2_filt[['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
