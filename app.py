@@ -225,6 +225,7 @@ def cargar_inventario():
 @st.cache_data(ttl=60)
 def cargar_metas():
     df_meta = pd.DataFrame()
+    # Búsqueda robusta de múltiples nombres
     archivos_posibles = ["META_2026.csv", "META 2026.csv", "META_2026_2.csv", "META 2026.xlsx"]
     
     for archivo in archivos_posibles:
@@ -237,7 +238,6 @@ def cargar_metas():
                 elif archivo.endswith('.xlsx'):
                     xls = pd.ExcelFile(archivo)
                     df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-                
                 if not df_meta.empty:
                     break
             except Exception:
@@ -248,6 +248,7 @@ def cargar_metas():
         primera_col = df_meta.columns[0]
         df_meta['MES'] = df_meta[primera_col].astype(str).str.strip().str.upper()
         
+        # Limpieza financiera ultra robusta
         for col in df_meta.columns:
             if col not in [primera_col, 'MES']:
                 if df_meta[col].dtype == object:
@@ -270,6 +271,9 @@ if df.empty:
 
 df_inv = cargar_inventario()
 df_metas_global = cargar_metas()
+
+if df_metas_global.empty:
+    st.warning("⚠️ No se pudo leer el archivo de metas. Verifica que el archivo 'META_2026.csv' exista en GitHub.")
 
 df = df.rename(columns={
     'ImporteDivisaPrincipal': 'VENTA',
@@ -366,88 +370,76 @@ if not meses_sel or not sucursal_sel or not departamentos_sel:
 mask_mes = df['MES'].astype(str).isin(meses_sel)
 mask_sucursal = df['SUCURSAL'].astype(str).isin(sucursal_sel)
 mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
+
 mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CÁLCULO DINÁMICO EXACTO Y PRORRATEO (CATIA, LA GUAIRA, MARICHE, GUATIRE)
+# CÁLCULO DINÁMICO DE LA META Y PRORRATEO DE LAS 6 SUCURSALES CLAVE
 # -------------------------------------------------------------------------
-# Limitamos la meta UNICAMENTE a estas 4 sucursales
-sucursales_meta_permitidas = ['CATIA', 'LA GUAIRA', 'MARICHE', 'GUATIRE']
+MAPEO_SUCURSALES = {
+    'CATIA': 'CATIA',
+    'LA GUAIRA': 'LA GUAIRA',
+    'MARICHE': 'MARICHE',
+    'GUATIRE': 'GUATIRE',
+    'ALUMUNIOLOGO WED': 'ECOMMERCE',
+    'DISTRIBUIDORES': 'DISTRIBUIDORES'
+}
+
 meta_total_asignada = 0.0
-tabla_metas_distribuidas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
+factor_meta = 0.0
+tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if int(año_sel) == 2026 and not df_metas_global.empty and 'MES' in df_metas_global.columns:
     df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
-    
-    # 1. Identificar las sucursales válidas seleccionadas en el sidebar
-    sucs_a_procesar = [s for s in sucursal_sel if str(s).upper().strip() in sucursales_meta_permitidas]
     cols_meta_upper = {str(c).upper().strip(): c for c in df_metas_global.columns}
     
-    metas_por_sucursal = {}
-    for suc in sucs_a_procesar:
-        suc_upper = str(suc).upper().strip()
-        if suc_upper in cols_meta_upper:
-            real_col = cols_meta_upper[suc_upper]
-            total_suc = df_meta_filtrada[real_col].sum()
-            metas_por_sucursal[suc_upper] = total_suc
-            meta_total_asignada += total_suc
-
-    # 2. Construir la base de prorrateo (Ventas del año anterior para sacar porcentajes)
-    mask_mes_depto = mask_mes & mask_depto
-    df_pesos_base = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_mes_depto]
+    # 1. Sumar metas asignadas en el archivo leyendo SOLO las 6 seleccionadas
+    for suc_sidebar in sucursal_sel:
+        suc_upper = str(suc_sidebar).upper().strip()
+        if suc_upper in MAPEO_SUCURSALES:
+            col_csv = MAPEO_SUCURSALES[suc_upper]
+            if col_csv in cols_meta_upper:
+                real_col = cols_meta_upper[col_csv]
+                meta_total_asignada += df_meta_filtrada[real_col].sum()
+                
+    # 2. Base histórica global para sacar el factor de prorrateo exacto
+    mask_mes_sucursal = mask_mes & mask_sucursal
+    df_pesos_base = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_mes_sucursal]
     
-    # Si el año anterior no tiene data (ej. 2025 está vacío), usar el año actual
     if df_pesos_base.empty or df_pesos_base['VENTA'].sum() <= 0:
-        df_pesos_base = df[(df['AÑO'] == int(año_sel)) & mask_mes_depto]
-
-    lista_dfs_meta = []
-    
-    # 3. Distribuir la meta sucursal por sucursal
-    for suc in sucs_a_procesar:
-        suc_upper = str(suc).upper().strip()
-        meta_sucursal = metas_por_sucursal.get(suc_upper, 0.0)
+        df_pesos_base = df[(df['AÑO'] == int(año_sel)) & mask_mes_sucursal]
         
-        if meta_sucursal > 0:
-            df_suc = df_pesos_base[df_pesos_base['SUCURSAL'].astype(str).str.upper() == suc_upper]
+    # EL PARCHE DE GUATIRE: Si Guatire está seleccionado pero no tiene historial de ventas, copiamos el % de Mariche
+    if 'GUATIRE' in [str(s).upper().strip() for s in sucursal_sel]:
+        ventas_guatire = df_pesos_base[df_pesos_base['SUCURSAL'].astype(str).str.upper() == 'GUATIRE']['VENTA'].sum()
+        if ventas_guatire <= 0:
+            # Extraemos Mariche de la BD sin importar si el usuario lo seleccionó
+            df_mariche = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_mes & (df['SUCURSAL'].astype(str).str.upper() == 'MARICHE')].copy()
+            if df_mariche.empty or df_mariche['VENTA'].sum() <= 0:
+                df_mariche = df[(df['AÑO'] == int(año_sel)) & mask_mes & (df['SUCURSAL'].astype(str).str.upper() == 'MARICHE')].copy()
             
-            # REGLA ESPECIAL PARA GUATIRE: Si no tiene historial de ventas, usa los % de MARICHE
-            if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                if suc_upper == 'GUATIRE':
-                    df_suc = df_pesos_base[df_pesos_base['SUCURSAL'].astype(str).str.upper() == 'MARICHE']
-                
-                # Si a pesar de esto sigue vacío, tomar los pesos consolidados totales como último recurso
-                if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                    df_suc = df_pesos_base
-
-            # 4. Cálculo matemático exacto para forzar el 100% de la meta por categoría
-            if not df_suc.empty and df_suc['VENTA'].sum() > 0:
-                agrupado = df_suc.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-                total_ventas_ref = agrupado['VENTA'].sum()
-                
-                agrupado['PORCENTAJE'] = agrupado['VENTA'] / total_ventas_ref
-                agrupado['META'] = agrupado['PORCENTAJE'] * meta_sucursal
-                
-                lista_dfs_meta.append(agrupado[['DEPARTAMENTO', 'CATEGORIA', 'META']])
-            else:
-                # Respaldo extremo si toda la base falla: distribución equitativa
-                df_cats = df[mask_depto].groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True).size().reset_index()
-                if not df_cats.empty:
-                    df_cats['META'] = meta_sucursal / len(df_cats)
-                    lista_dfs_meta.append(df_cats[['DEPARTAMENTO', 'CATEGORIA', 'META']])
-
-    # 5. Consolidar todas las metas prorrateadas
-    if lista_dfs_meta:
-        tabla_metas_distribuidas = pd.concat(lista_dfs_meta, ignore_index=True)
-        tabla_metas_distribuidas = tabla_metas_distribuidas.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
-
-tabla_ant = tabla_metas_distribuidas.copy()
-if not tabla_ant.empty:
-    tabla_ant['DEPARTAMENTO'] = tabla_ant['DEPARTAMENTO'].astype(str).str.strip().str.upper()
-    tabla_ant['CATEGORIA'] = tabla_ant['CATEGORIA'].astype(str).str.strip().str.upper()
-else:
-    tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
-
+            if not df_mariche.empty:
+                df_mariche['SUCURSAL'] = 'GUATIRE' # "Disfrazamos" a Mariche de Guatire temporalmente
+                df_pesos_base = pd.concat([df_pesos_base, df_mariche], ignore_index=True)
+    
+    # 3. Cálculo matemático del Factor Meta para prorratear el 100% de los pesos
+    ventas_ant_global_total = df_pesos_base['VENTA'].sum()
+    if ventas_ant_global_total > 0:
+        factor_meta = meta_total_asignada / ventas_ant_global_total
+        
+    # 4. Aplicar el multiplicador a los departamentos y categorías seleccionadas
+    mask_depto_pesos = df_pesos_base['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
+    df_base_deptos = df_pesos_base[mask_depto_pesos]
+    
+    if not df_base_deptos.empty and factor_meta > 0:
+        tabla_ant = df_base_deptos.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+        tabla_ant = tabla_ant.rename(columns={'VENTA': 'META'})
+        tabla_ant['META'] = tabla_ant['META'] * factor_meta
+        
+        # Asegurar formato estándar de los cruces
+        tabla_ant['DEPARTAMENTO'] = tabla_ant['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+        tabla_ant['CATEGORIA'] = tabla_ant['CATEGORIA'].astype(str).str.strip().str.upper()
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
@@ -555,9 +547,9 @@ if not tabla_base.empty:
 else:
     subtotales = pd.DataFrame()
 
-# Garantizamos que la sumatoria total del cuadro respete exactamente el valor calculado a nivel macro.
+# Sumamos todos los pedazos de la meta y mostramos matemáticamente el total correcto
 total_g_venta = tabla_base["VENTA"].sum() if not tabla_base.empty else 0.0
-total_g_meta = meta_total_asignada if meta_total_asignada > 0 else (subtotales["META"].sum() if not subtotales.empty else 0.0)
+total_g_meta = subtotales["META"].sum() if not subtotales.empty else 0.0
 total_g_m2 = subtotales["M2"].sum() if not subtotales.empty else 0.0
 total_g_avance = (total_g_venta / total_g_meta) * 100 if total_g_meta > 0 else 0.0
 total_g_eficiencia = total_g_venta / total_g_m2 if total_g_m2 > 0 else 0.0
