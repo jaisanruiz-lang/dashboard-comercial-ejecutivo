@@ -233,22 +233,38 @@ def cargar_metas():
             xls = pd.ExcelFile(archivo_xlsx)
             df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
         elif os.path.exists(archivo_csv):
-            df_meta = pd.read_csv(archivo_csv, sep=";", encoding="latin-1")
+            try:
+                df_meta = pd.read_csv(archivo_csv, sep=";", encoding="latin-1")
+                # Si las columnas no se separaron bien, probamos con coma
+                if len(df_meta.columns) < 2:
+                    df_meta = pd.read_csv(archivo_csv, sep=",", encoding="latin-1")
+            except Exception:
+                pass
             
         if not df_meta.empty:
-            if 'Etiquetas de fila' in df_meta.columns:
-                df_meta['MES'] = df_meta['Etiquetas de fila'].astype(str).str.strip().str.upper()
+            df_meta.columns = df_meta.columns.str.strip()
             
-            # Limpieza exhaustiva de números para evitar strings ocultos
+            # Ubicamos dinámicamente la columna del mes/etiqueta
+            col_mes = None
+            for c in df_meta.columns:
+                if 'ETIQUETA' in c.upper() or 'MES' in c.upper():
+                    col_mes = c
+                    break
+            
+            if col_mes:
+                df_meta['MES'] = df_meta[col_mes].astype(str).str.strip().str.upper()
+            
+            # Limpieza BLINDADA de números (elimina -, $, espacios, puntos y transforma comas)
             for col in df_meta.columns:
-                if col not in ['Etiquetas de fila', 'MES']:
+                if col not in [col_mes, 'MES'] and col_mes is not None:
                     if df_meta[col].dtype == object:
                         df_meta[col] = (df_meta[col]
                                         .astype(str)
                                         .str.replace(r'\s+', '', regex=True)
                                         .str.replace('$', '', regex=False)
                                         .str.replace('.', '', regex=False)
-                                        .str.replace(',', '.', regex=False))
+                                        .str.replace(',', '.', regex=False)
+                                        .str.replace('-', '0', regex=False))
                     df_meta[col] = pd.to_numeric(df_meta[col], errors='coerce').fillna(0.0)
     except Exception:
         pass
@@ -361,16 +377,13 @@ mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
 mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
-try:
-    df_año_anterior = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun]
-except ValueError:
-    df_año_anterior = pd.DataFrame()
+# -----------------------------------
+# CÁLCULO DINÁMICO DE LA META (CUADRATURA EXACTA Y ROBUSTA)
+# -----------------------------------
+meta_total_asignada = 0.0
+tabla_metas_distribuidas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
-# -----------------------------------
-# CÁLCULO DINÁMICO DE LA META (CUADRATURA EXACTA)
-# -----------------------------------
-factor_meta = 2.0 
-if int(año_sel) == 2026 and not df_metas_global.empty:
+if not df_metas_global.empty and 'MES' in df_metas_global.columns:
     mapeo_sucursales_meta = {
         'CATIA': 'CATIA',
         'LA GUAIRA': 'LA GUAIRA',
@@ -380,30 +393,36 @@ if int(año_sel) == 2026 and not df_metas_global.empty:
         'DISTRIBUIDORES': 'DISTRIBUIDORES',
     }
     
-    meta_total_asignada = 0.0
-    if 'MES' in df_metas_global.columns:
-        df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
-        for suc in sucursal_sel:
-            col_meta = mapeo_sucursales_meta.get(suc)
-            if col_meta and col_meta in df_meta_filtrada.columns:
-                meta_total_asignada += df_meta_filtrada[col_meta].sum()
-                
-    # Cálculo del factor aislando únicamente los departamentos válidos vigentes
-    # y excluyendo las devoluciones netas (valores < 0) para no inflar la meta de otras categorías.
-    mask_comun_base = mask_mes & mask_sucursal & df['DEPARTAMENTO'].isin(todos_departamentos)
-    try:
-        df_año_anterior_base = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_base]
-        tabla_pesos = df_año_anterior_base.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-        # Colocamos un piso de cero para no restar ventas que alteren la matemática de los pesos
+    df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
+    cols_meta_upper = {str(c).upper().strip(): c for c in df_metas_global.columns}
+    
+    for suc in sucursal_sel:
+        suc_upper = str(suc).upper().strip()
+        col_meta = mapeo_sucursales_meta.get(suc_upper)
+        if col_meta and col_meta in cols_meta_upper:
+            real_col_name = cols_meta_upper[col_meta]
+            meta_total_asignada += df_meta_filtrada[real_col_name].sum()
+
+    # Base para calcular los pesos de distribución usando TODO el portafolio 
+    mask_comun_pesos = mask_mes & mask_sucursal 
+    df_pesos = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_pesos]
+    
+    # BACKUP INTELIGENTE: Si no hay ventas el año anterior, calculamos el peso con base en lo vendido este año
+    if df_pesos.empty or df_pesos['VENTA'].sum() <= 0:
+        df_pesos = df[(df['AÑO'] == int(año_sel)) & mask_comun_pesos]
+
+    if not df_pesos.empty:
+        tabla_pesos = df_pesos.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+        # Anulamos devoluciones para no distorsionar proporciones
         tabla_pesos['VENTA'] = np.where(tabla_pesos['VENTA'] > 0, tabla_pesos['VENTA'], 0)
-        ventas_ant_global_total = tabla_pesos['VENTA'].sum()
-    except ValueError:
-        ventas_ant_global_total = 0.0
+        ventas_totales_peso = tabla_pesos['VENTA'].sum()
         
-    if ventas_ant_global_total > 0:
-        factor_meta = meta_total_asignada / ventas_ant_global_total
-    else:
-        factor_meta = 0.0
+        if ventas_totales_peso > 0:
+            tabla_pesos['PESO'] = tabla_pesos['VENTA'] / ventas_totales_peso
+            tabla_pesos['META'] = tabla_pesos['PESO'] * meta_total_asignada
+            
+            # Filtramos solo los departamentos seleccionados por el usuario para armar la tabla
+            tabla_metas_distribuidas = tabla_pesos[tabla_pesos['DEPARTAMENTO'].isin(departamentos_sel)][['DEPARTAMENTO', 'CATEGORIA', 'META']]
 
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
@@ -411,33 +430,27 @@ df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
-    # 1. Aplicar filtros al inventario a nivel nacional (sin filtrar por sucursal)
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
     df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
-        # El inventario corresponde a la foto del ÚLTIMO mes seleccionado
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
-        # 2. Consolidar ventas globales de los meses anteriores seleccionados
         idx_ultimo = orden_meses.index(ultimo_mes_existente)
         meses_anteriores_en_seleccion = [m for m in meses_sel if orden_meses.index(m) < idx_ultimo]
         
         if len(meses_anteriores_en_seleccion) == 0:
-            # Si solo se seleccionó un mes, se usa el mes calendario inmediatamente anterior
             if idx_ultimo > 0:
                 meses_para_ventas = [(int(año_sel), orden_meses[idx_ultimo - 1])]
             else:
                 meses_para_ventas = [(int(año_sel) - 1, 'DICIEMBRE')]
         else:
-            # Si se seleccionaron múltiples meses, se suman las ventas de los meses seleccionados previos al último
             meses_para_ventas = [(int(año_sel), m) for m in meses_anteriores_en_seleccion]
             
         frames_ant = []
         for a_ant, m_ant in meses_para_ventas:
-            # Ventas globales (sin filtrar por sucursal) para mantener consistencia nacional
             frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel))]
             frames_ant.append(frame_ventas)
         
@@ -458,12 +471,8 @@ df_m2_sel = pd.DataFrame()
 if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
     df_m2_sel = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
 
-if not df_año_anterior.empty and 'DEPARTAMENTO' in df_año_anterior.columns and 'CATEGORIA' in df_año_anterior.columns:
-    tabla_ant = df_año_anterior.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-    tabla_ant = tabla_ant.rename(columns={'VENTA': 'META'})
-    # Bloqueamos que el histórico asigne metas negativas por devoluciones
-    tabla_ant['META'] = np.where(tabla_ant['META'] > 0, tabla_ant['META'], 0)
-    tabla_ant['META'] = tabla_ant['META'] * factor_meta
+if not tabla_metas_distribuidas.empty:
+    tabla_ant = tabla_metas_distribuidas.copy()
 else:
     tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
