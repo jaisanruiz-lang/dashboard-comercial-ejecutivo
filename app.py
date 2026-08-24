@@ -222,6 +222,20 @@ def cargar_inventario():
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)
+def cargar_metas():
+    archivo_meta = "META 2026.xlsx"
+    if not os.path.exists(archivo_meta):
+        return pd.DataFrame()
+    try:
+        xls = pd.ExcelFile(archivo_meta)
+        df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+        if 'Etiquetas de fila' in df_meta.columns:
+            df_meta['MES'] = df_meta['Etiquetas de fila'].astype(str).str.strip().str.upper()
+        return df_meta
+    except Exception:
+        return pd.DataFrame()
+
 df, df_m2 = cargar_datos()
 
 if df.empty:
@@ -229,6 +243,7 @@ if df.empty:
     st.stop()
 
 df_inv = cargar_inventario()
+df_metas_global = cargar_metas()
 
 df = df.rename(columns={
     'ImporteDivisaPrincipal': 'VENTA',
@@ -311,7 +326,7 @@ if not meses_sel or not sucursal_sel or not departamentos_sel:
     with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("VENTAS TOTALES", "$ 0,00")
-        col2.metric("META FIJADA (X2)", "$ 0,00")
+        col2.metric("META FIJADA", "$ 0,00")
         col3.metric("PORCENTAJE DE AVANCE", "0,00 %")
         col4.metric("EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)", "$ 0,00")
         col5.metric("COBERTURA DE INVENTARIO", "Sin data de inventario")
@@ -332,6 +347,40 @@ try:
 except ValueError:
     df_año_anterior = pd.DataFrame()
 
+# -----------------------------------
+# CÁLCULO DINÁMICO DE LA META
+# -----------------------------------
+factor_meta = 2.0 
+if int(año_sel) == 2026 and not df_metas_global.empty:
+    mapeo_sucursales_meta = {
+        'CATIA': 'CATIA',
+        'LA GUAIRA': 'LA GUAIRA',
+        'MARICHE': 'MARICHE',
+        'GUATIRE': 'GUATIRE',
+        'ALUMUNIOLOGO WED': 'ECOMMERCE',
+        'DISTRIBUIDORES': 'DISTRIBUIDORES',
+    }
+    
+    meta_total_asignada = 0.0
+    if 'MES' in df_metas_global.columns:
+        df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
+        for suc in sucursal_sel:
+            col_meta = mapeo_sucursales_meta.get(suc)
+            if col_meta and col_meta in df_meta_filtrada.columns:
+                meta_total_asignada += df_meta_filtrada[col_meta].sum()
+                
+    # Ventas globales del año anterior para sacar pesos proporcionales sin filtro de departamento
+    mask_comun_global = mask_mes & mask_sucursal
+    try:
+        df_año_anterior_global = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_global]
+        ventas_ant_global_total = df_año_anterior_global['VENTA'].sum()
+    except ValueError:
+        ventas_ant_global_total = 0.0
+        
+    if ventas_ant_global_total > 0:
+        factor_meta = meta_total_asignada / ventas_ant_global_total
+    else:
+        factor_meta = 0.0
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
@@ -377,7 +426,6 @@ if not df_venta_mes_ant.empty:
 else:
     ventas_ant_agrupadas = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'VENTA_MES_ANT'])
 
-
 # -----------------------------------
 # PROCESAMIENTO MATRICIAL DE LOS DATOS
 # -----------------------------------
@@ -388,7 +436,7 @@ if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
 if not df_año_anterior.empty and 'DEPARTAMENTO' in df_año_anterior.columns and 'CATEGORIA' in df_año_anterior.columns:
     tabla_ant = df_año_anterior.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
     tabla_ant = tabla_ant.rename(columns={'VENTA': 'META'})
-    tabla_ant['META'] = tabla_ant['META'] * 2
+    tabla_ant['META'] = tabla_ant['META'] * factor_meta
 else:
     tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
@@ -427,7 +475,6 @@ if not df_inv_filtrado.empty and 'Valor' in df_inv_filtrado.columns:
     tabla_base['Valor'] = pd.to_numeric(tabla_base.get('Valor', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
     tabla_base['VENTA_MES_ANT'] = pd.to_numeric(tabla_base.get('VENTA_MES_ANT', pd.Series(dtype=float)), errors='coerce').fillna(0.0)
     
-    # Formula real: Inventario del último mes cargado / Suma total de las ventas anteriores
     tabla_base['COBERTURA'] = np.where(tabla_base['VENTA_MES_ANT'] > 0, tabla_base['Valor'] / tabla_base['VENTA_MES_ANT'], 0.0)
 else:
     tabla_base['Valor'] = 0.0
@@ -625,7 +672,7 @@ with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
     col1, col2, col3, col4, col5 = st.columns(5)
 
     col1.metric("VENTAS TOTALES", formatear_moneda(total_ventas))
-    col2.metric("META FIJADA (X2)", formatear_moneda(meta_dinamica_total))
+    col2.metric("META FIJADA", formatear_moneda(meta_dinamica_total))
     col3.metric("PORCENTAJE DE AVANCE", formatear_porcentaje(avance_general))
     col4.metric("EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)", formatear_moneda(eficiencia_total))
     col5.metric("COBERTURA DE INVENTARIO", formatear_cobertura(total_g_cobertura))
