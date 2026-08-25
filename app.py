@@ -228,7 +228,6 @@ def cargar_inventario():
 
 @st.cache_data(ttl=60)
 def cargar_metas_y_porcentajes_estructurados():
-    # Cargar META_2026.csv (Formato: MESES, AÑO, META, SUCURSAL)
     df_meta = pd.DataFrame()
     if os.path.exists("META_2026.csv"):
         try:
@@ -239,7 +238,6 @@ def cargar_metas_y_porcentajes_estructurados():
         except Exception:
             pass
 
-    # Cargar METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv (Formato: DEPARTAMENTO, CATEGORIA, PORCENTAJE, SUCURSAL, AÑO)
     df_pct = pd.DataFrame()
     if os.path.exists("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"):
         try:
@@ -361,21 +359,17 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CALCULO DINAMICO DE METAS (CON ARCHIVOS ESTRUCTURADOS)
+# CALCULO DINAMICO DE METAS (NORMALIZADO AL 100% PARA CUADRE EXACTO)
 # -------------------------------------------------------------------------
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if not df_meta_csv.empty and not df_pct_csv.empty:
     try:
-        # Mapeo de nombres de sucursales si es necesario (ej. ALUMUNIOLOGO WED <-> ECOMMERCE / ALUMINIOLOGO WEB)
         df_m_calc = df_meta_csv.copy()
         df_m_calc.columns = df_m_calc.columns.str.strip()
-        
-        # Normalizar sucursales en meta
         df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].astype(str).str.upper().str.strip()
         df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].replace({'ECOMMERCE': 'ALUMUNIOLOGO WED', 'ALUMINIOLOGO WEB': 'ALUMUNIOLOGO WED'})
         
-        # Filtrar por año, meses seleccionados y sucursales seleccionadas
         sucursales_up = [str(s).upper().strip() for s in sucursal_sel]
         
         mask_m = (
@@ -385,7 +379,6 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         )
         df_m_fil = df_m_calc[mask_m].copy()
         
-        # Limpiar y sumar montos de meta por sucursal
         df_m_fil['META_NUM'] = (
             df_m_fil['META']
             .astype(str)
@@ -397,7 +390,6 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         df_m_fil['META_NUM'] = pd.to_numeric(df_m_fil['META_NUM'], errors='coerce').fillna(0.0)
         totales_meta_suc = df_m_fil.groupby('SUCURSAL')['META_NUM'].sum().to_dict()
         
-        # Procesar porcentajes
         df_p_calc = df_pct_csv.copy()
         df_p_calc.columns = df_p_calc.columns.str.strip()
         df_p_calc['SUCURSAL'] = df_p_calc['SUCURSAL'].astype(str).str.upper().str.strip()
@@ -406,7 +398,6 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         df_p_calc['DEPARTAMENTO'] = df_p_calc['DEPARTAMENTO'].apply(normalizar_texto)
         df_p_calc['CATEGORIA'] = df_p_calc['CATEGORIA'].apply(normalizar_texto)
         
-        # Limpiar porcentaje
         pct_serie = (
             df_p_calc['PORCENTAJE']
             .astype(str)
@@ -414,21 +405,23 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
             .str.replace(r'\s+', '', regex=True)
             .str.replace(',', '.', regex=False)
         )
-        df_p_calc['PCT_VAL'] = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0) / 100.0
+        df_p_calc['PCT_VAL'] = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0)
         
-        # Filtrar por sucursales y departamentos seleccionados
+        # Normalizar los porcentajes por sucursal para que sumen exactamente 100% y cuadren al centavo
+        suma_pcts_por_suc = df_p_calc.groupby('SUCURSAL')['PCT_VAL'].transform('sum')
+        df_p_calc['PCT_VAL_NORM'] = np.where(suma_pcts_por_suc > 0, df_p_calc['PCT_VAL'] / suma_pcts_por_suc, 0.0)
+        
         df_p_fil = df_p_calc[
             (df_p_calc['SUCURSAL'].isin(sucursales_up)) &
             (df_p_calc['DEPARTAMENTO'].isin(departamentos_sel))
         ].copy()
         
-        # Calcular meta multiplicando monto total de la sucursal por su porcentaje
         lista_metas = []
         for suc in sucursales_up:
             monto_suc = totales_meta_suc.get(suc, 0.0)
             if monto_suc > 0:
                 df_s = df_p_fil[df_p_fil['SUCURSAL'] == suc].copy()
-                df_s['META'] = df_s['PCT_VAL'] * monto_suc
+                df_s['META'] = df_s['PCT_VAL_NORM'] * monto_suc
                 lista_metas.append(df_s[['DEPARTAMENTO', 'CATEGORIA', 'META']])
                 
         if lista_metas:
