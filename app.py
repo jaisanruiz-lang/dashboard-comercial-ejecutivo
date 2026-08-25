@@ -224,7 +224,6 @@ def cargar_inventario():
 
 @st.cache_data(ttl=60)
 def cargar_metas_mensuales_y_porcentajes():
-    # 1. Cargar montos mensuales por sucursal ("META 2026.csv")
     df_mensual = pd.DataFrame()
     for archivo in ["META 2026.csv", "META_2026.csv"]:
         if os.path.exists(archivo):
@@ -237,7 +236,6 @@ def cargar_metas_mensuales_y_porcentajes():
             except Exception:
                 pass
                 
-    # 2. Cargar porcentajes por categoría y sucursal ("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv")
     df_pct = pd.DataFrame()
     archivo_pct = "METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"
     if os.path.exists(archivo_pct):
@@ -365,14 +363,11 @@ tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
     try:
-        # Limpiar nombres de columnas
         df_mensual.columns = df_mensual.columns.str.strip()
-        col_meses = df_mensual.columns[0] # 'Etiquetas de fila'
+        col_meses = df_mensual.columns[0]
         
-        # Filtrar los meses seleccionados en el sidebar
         df_m_sel = df_mensual[df_mensual[col_meses].astype(str).str.upper().str.strip().isin(meses_sel)]
         
-        # Mapeo de sucursales del sidebar a las columnas del archivo mensual
         map_cols_mensual = {
             'CATIA': 'CATIA',
             'LA GUAIRA': 'LA GUAIRA',
@@ -382,7 +377,6 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
             'DISTRIBUIDORES': 'DISTRIBUIDORES'
         }
         
-        # Mapeo para los porcentajes
         map_cols_pct = {
             'CATIA': 'CATIA',
             'LA GUAIRA': 'LA GUAIRA',
@@ -392,14 +386,12 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
             'DISTRIBUIDORES': 'DISTRIBUIDORES'
         }
         
-        # Calcular el total de la meta en dinero para cada sucursal seleccionada en los meses seleccionados
         totales_sucursal_meta = {}
         for suc in sucursal_sel:
             suc_up = str(suc).upper().strip()
             if suc_up in map_cols_mensual:
                 col_csv = map_cols_mensual[suc_up]
                 if col_csv in df_m_sel.columns:
-                    # Limpiar formato de dinero (ej. '153.935,00' -> 153935.00)
                     serie_limpia = (
                         df_m_sel[col_csv]
                         .astype(str)
@@ -411,16 +403,13 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
                     suma_val = pd.to_numeric(serie_limpia, errors='coerce').fillna(0.0).sum()
                     totales_sucursal_meta[suc_up] = suma_val
 
-        # Preparar el dataframe de porcentajes
         df_p = df_pct.copy()
         df_p.columns = df_p.columns.str.strip()
         df_p['DEPARTAMENTO'] = df_p['DEPARTAMENTO'].astype(str).str.strip().str.upper()
         df_p['CATEGORIA'] = df_p['CATEGORIA'].astype(str).str.strip().str.upper()
         
-        # Filtrar departamentos seleccionados
         df_p = df_p[df_p['DEPARTAMENTO'].isin(departamentos_sel)]
         
-        # Acumular las metas por categoría aplicando el porcentaje de cada sucursal
         lista_metas_calculadas = []
         
         for suc in sucursal_sel:
@@ -429,13 +418,12 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
             if monto_total_suc > 0 and suc_up in map_cols_pct:
                 col_pct = map_cols_pct[suc_up]
                 if col_pct in df_p.columns:
-                    # Limpiar porcentaje (ej. '10,05%' -> 0.1005)
+                    # Limpieza precisa de porcentajes (ej. '10,05%' -> 0.1005)
                     pct_serie = (
                         df_p[col_pct]
                         .astype(str)
                         .str.replace('%', '', regex=False)
                         .str.replace(r'\s+', '', regex=True)
-                        .str.replace('.', '', regex=False)
                         .str.replace(',', '.', regex=False)
                     )
                     pct_val = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0) / 100.0
