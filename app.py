@@ -224,47 +224,17 @@ def cargar_inventario():
 
 @st.cache_data(ttl=60)
 def cargar_metas():
-    df_meta = pd.DataFrame()
-    # Búsqueda ultra dinámica: Lee CUALQUIER archivo que empiece por META
+    archivo_meta = "META 2026.xlsx"
+    if not os.path.exists(archivo_meta):
+        return pd.DataFrame()
     try:
-        archivos_en_directorio = os.listdir('.')
-        archivos_meta = [f for f in archivos_en_directorio if f.upper().startswith('META') and (f.endswith('.csv') or f.endswith('.xlsx'))]
+        xls = pd.ExcelFile(archivo_meta)
+        df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+        if 'Etiquetas de fila' in df_meta.columns:
+            df_meta['MES'] = df_meta['Etiquetas de fila'].astype(str).str.strip().str.upper()
+        return df_meta
     except Exception:
-        archivos_meta = ["META_2026_3.csv", "META_2026.csv", "META 2026.csv", "META_2026_2.csv", "META 2026.xlsx"]
-    
-    for archivo in archivos_meta:
-        if os.path.exists(archivo):
-            try:
-                if archivo.endswith('.csv'):
-                    df_meta = pd.read_csv(archivo, sep=";", encoding="latin-1")
-                    if len(df_meta.columns) < 3:
-                        df_meta = pd.read_csv(archivo, sep=",", encoding="latin-1")
-                elif archivo.endswith('.xlsx'):
-                    xls = pd.ExcelFile(archivo)
-                    df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-                if not df_meta.empty:
-                    break
-            except Exception:
-                continue
-            
-    if not df_meta.empty:
-        df_meta.columns = df_meta.columns.str.strip()
-        primera_col = df_meta.columns[0]
-        df_meta['MES'] = df_meta[primera_col].astype(str).str.strip().str.upper()
-        
-        for col in df_meta.columns:
-            if col not in [primera_col, 'MES']:
-                if df_meta[col].dtype == object:
-                    df_meta[col] = (df_meta[col]
-                                    .astype(str)
-                                    .str.replace(r'\s+', '', regex=True)
-                                    .str.replace('$', '', regex=False)
-                                    .str.replace('.', '', regex=False)
-                                    .str.replace(',', '.', regex=False)
-                                    .str.replace('-', '0', regex=False))
-                df_meta[col] = pd.to_numeric(df_meta[col], errors='coerce').fillna(0.0)
-                
-    return df_meta
+        return pd.DataFrame()
 
 df, df_m2 = cargar_datos()
 
@@ -275,9 +245,6 @@ if df.empty:
 df_inv = cargar_inventario()
 df_metas_global = cargar_metas()
 
-if df_metas_global.empty:
-    st.warning("⚠️ ALERTA: No se encontró ningún archivo de metas válido en el sistema (ej. META_2026_3.csv).")
-
 df = df.rename(columns={
     'ImporteDivisaPrincipal': 'VENTA',
     'DescrLineaNegocio': 'CATEGORIA',
@@ -286,8 +253,6 @@ df = df.rename(columns={
 
 if 'CATEGORIA' in df.columns:
     df['CATEGORIA'] = df['CATEGORIA'].astype(str).str.strip().str.upper()
-if 'DEPARTAMENTO' in df.columns:
-    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].astype(str).str.strip().str.upper()
 
 # -----------------------------------
 # ESTRUCTURA DE ORDENAMIENTO ESTRICTO
@@ -377,112 +342,78 @@ mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
 mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
-# -------------------------------------------------------------------------
-# CÁLCULO DINÁMICO DE LA META Y PRORRATEO (6 SUCURSALES CLAVE)
-# -------------------------------------------------------------------------
-MAPEO_SUCURSALES = {
-    'CATIA': 'CATIA',
-    'LA GUAIRA': 'LA GUAIRA',
-    'MARICHE': 'MARICHE',
-    'GUATIRE': 'GUATIRE',
-    'ALUMUNIOLOGO WED': 'ECOMMERCE',
-    'DISTRIBUIDORES': 'DISTRIBUIDORES'
-}
+try:
+    df_año_anterior = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun]
+except ValueError:
+    df_año_anterior = pd.DataFrame()
 
-meta_total_asignada = 0.0
-tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
-
-if int(año_sel) == 2026 and not df_metas_global.empty and 'MES' in df_metas_global.columns:
-    df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
-    cols_meta_upper = {str(c).upper().strip(): c for c in df_metas_global.columns}
+# -----------------------------------
+# CÁLCULO DINÁMICO DE LA META
+# -----------------------------------
+factor_meta = 2.0 
+if int(año_sel) == 2026 and not df_metas_global.empty:
+    mapeo_sucursales_meta = {
+        'CATIA': 'CATIA',
+        'LA GUAIRA': 'LA GUAIRA',
+        'MARICHE': 'MARICHE',
+        'GUATIRE': 'GUATIRE',
+        'ALUMUNIOLOGO WED': 'ECOMMERCE',
+        'DISTRIBUIDORES': 'DISTRIBUIDORES',
+    }
     
-    sucs_meta_activas = []
-    
-    # 1. Sumar metas asignadas en el archivo leyendo SOLO las 6 seleccionadas
-    for suc_sidebar in sucursal_sel:
-        suc_upper = str(suc_sidebar).upper().strip()
-        if suc_upper in MAPEO_SUCURSALES:
-            col_csv = MAPEO_SUCURSALES[suc_upper]
-            if col_csv in cols_meta_upper:
-                real_col = cols_meta_upper[col_csv]
-                suma_suc = df_meta_filtrada[real_col].sum()
-                meta_total_asignada += suma_suc
-                sucs_meta_activas.append(suc_upper)
+    meta_total_asignada = 0.0
+    if 'MES' in df_metas_global.columns:
+        df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
+        for suc in sucursal_sel:
+            col_meta = mapeo_sucursales_meta.get(suc)
+            if col_meta and col_meta in df_meta_filtrada.columns:
+                meta_total_asignada += df_meta_filtrada[col_meta].sum()
                 
-    # 2. Prorrateo Matemático Exacto (Garantiza el 100%)
-    if meta_total_asignada > 0:
-        mask_base_pesos = df['MES'].astype(str).isin(meses_sel) & df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
-        df_base_2025 = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_base_pesos].copy()
-        df_base_2026 = df[(df['AÑO'] == int(año_sel)) & mask_base_pesos].copy()
+    # Ventas globales del año anterior para sacar pesos proporcionales sin filtro de departamento
+    mask_comun_global = mask_mes & mask_sucursal
+    try:
+        df_año_anterior_global = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_global]
+        ventas_ant_global_total = df_año_anterior_global['VENTA'].sum()
+    except ValueError:
+        ventas_ant_global_total = 0.0
         
-        dfs_para_pesos = []
-        
-        for suc_upper in sucs_meta_activas:
-            df_suc = df_base_2025[df_base_2025['SUCURSAL'].astype(str).str.upper() == suc_upper]
-            
-            if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                df_suc = df_base_2026[df_base_2026['SUCURSAL'].astype(str).str.upper() == suc_upper]
-                
-            # EL PARCHE DE GUATIRE: Heredar el comportamiento de Mariche si no tiene ventas
-            if (df_suc.empty or df_suc['VENTA'].sum() <= 0) and suc_upper == 'GUATIRE':
-                df_suc = df_base_2025[df_base_2025['SUCURSAL'].astype(str).str.upper() == 'MARICHE']
-                if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                    df_suc = df_base_2026[df_base_2026['SUCURSAL'].astype(str).str.upper() == 'MARICHE']
-                    
-            # Respaldo extremo si otra sucursal está vacía
-            if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                df_suc = df_base_2025
-                if df_suc.empty or df_suc['VENTA'].sum() <= 0:
-                    df_suc = df_base_2026
-                    
-            dfs_para_pesos.append(df_suc)
-            
-        if dfs_para_pesos:
-            df_pesos_consolidado = pd.concat(dfs_para_pesos, ignore_index=True)
-            
-            # Agrupamos por los filtros que aplican para sacar el porcentaje puro
-            tabla_ant = df_pesos_consolidado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-            ventas_totales_base = tabla_ant['VENTA'].sum()
-            
-            if ventas_totales_base > 0:
-                tabla_ant['PORCENTAJE'] = tabla_ant['VENTA'] / ventas_totales_base
-                tabla_ant['META'] = tabla_ant['PORCENTAJE'] * meta_total_asignada
-            else:
-                # Caso extremo: sin registros de venta absolutos en esa combinación
-                if not tabla_ant.empty:
-                    tabla_ant['META'] = meta_total_asignada / len(tabla_ant)
-                    
-            # Formateo y limpieza de la base distribuida
-            tabla_ant['DEPARTAMENTO'] = tabla_ant['DEPARTAMENTO'].astype(str).str.strip().str.upper()
-            tabla_ant['CATEGORIA'] = tabla_ant['CATEGORIA'].astype(str).str.strip().str.upper()
-            tabla_ant = tabla_ant[['DEPARTAMENTO', 'CATEGORIA', 'META']]
+    if ventas_ant_global_total > 0:
+        factor_meta = meta_total_asignada / ventas_ant_global_total
+    else:
+        factor_meta = 0.0
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
+    # 1. Aplicar filtros al inventario a nivel nacional (sin filtrar por sucursal)
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
     df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
+        # El inventario corresponde a la foto del ÚLTIMO mes seleccionado
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
+        # 2. Consolidar ventas globales de los meses anteriores seleccionados
         idx_ultimo = orden_meses.index(ultimo_mes_existente)
         meses_anteriores_en_seleccion = [m for m in meses_sel if orden_meses.index(m) < idx_ultimo]
         
         if len(meses_anteriores_en_seleccion) == 0:
+            # Si solo se seleccionó un mes, se usa el mes calendario inmediatamente anterior
             if idx_ultimo > 0:
                 meses_para_ventas = [(int(año_sel), orden_meses[idx_ultimo - 1])]
             else:
                 meses_para_ventas = [(int(año_sel) - 1, 'DICIEMBRE')]
         else:
+            # Si se seleccionaron múltiples meses, se suman las ventas de los meses seleccionados previos al último
             meses_para_ventas = [(int(año_sel), m) for m in meses_anteriores_en_seleccion]
             
         frames_ant = []
         for a_ant, m_ant in meses_para_ventas:
+            # Ventas globales (sin filtrar por sucursal) para mantener consistencia nacional
             frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel))]
             frames_ant.append(frame_ventas)
         
@@ -501,6 +432,13 @@ else:
 df_m2_sel = pd.DataFrame()
 if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
     df_m2_sel = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
+
+if not df_año_anterior.empty and 'DEPARTAMENTO' in df_año_anterior.columns and 'CATEGORIA' in df_año_anterior.columns:
+    tabla_ant = df_año_anterior.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+    tabla_ant = tabla_ant.rename(columns={'VENTA': 'META'})
+    tabla_ant['META'] = tabla_ant['META'] * factor_meta
+else:
+    tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if not df_filtrado.empty and 'DEPARTAMENTO' in df_filtrado.columns and 'CATEGORIA' in df_filtrado.columns:
     tabla_actual = df_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
@@ -563,9 +501,8 @@ if not tabla_base.empty:
 else:
     subtotales = pd.DataFrame()
 
-# Sumamos todos los pedazos de la meta y mostramos matemáticamente el total correcto
 total_g_venta = tabla_base["VENTA"].sum() if not tabla_base.empty else 0.0
-total_g_meta = meta_total_asignada if meta_total_asignada > 0 else (subtotales["META"].sum() if not subtotales.empty else 0.0)
+total_g_meta = subtotales["META"].sum() if not subtotales.empty else 0.0
 total_g_m2 = subtotales["M2"].sum() if not subtotales.empty else 0.0
 total_g_avance = (total_g_venta / total_g_meta) * 100 if total_g_meta > 0 else 0.0
 total_g_eficiencia = total_g_venta / total_g_m2 if total_g_m2 > 0 else 0.0
