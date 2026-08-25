@@ -74,7 +74,6 @@ st.markdown('<h1 class="main-title">📊 DASHBOARD COMERCIAL</h1>', unsafe_allow
 def normalizar_texto(texto):
     if pd.isna(texto):
         return ""
-    # Eliminar acentos y estandarizar a mayúsculas sin espacios extra
     texto_sin_tildes = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return " ".join(texto_sin_tildes.upper().split())
 
@@ -228,30 +227,30 @@ def cargar_inventario():
         return pd.DataFrame()
 
 @st.cache_data(ttl=60)
-def cargar_metas_mensuales_y_porcentajes():
-    df_mensual = pd.DataFrame()
-    for archivo in ["META 2026.csv", "META_2026.csv"]:
-        if os.path.exists(archivo):
-            try:
-                df_mensual = pd.read_csv(archivo, sep=";", encoding="latin-1")
-                if len(df_mensual.columns) < 3:
-                    df_mensual = pd.read_csv(archivo, sep=",", encoding="latin-1")
-                if not df_mensual.empty:
-                    break
-            except Exception:
-                pass
-                
-    df_pct = pd.DataFrame()
-    archivo_pct = "METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"
-    if os.path.exists(archivo_pct):
+def cargar_metas_y_porcentajes_estructurados():
+    # Cargar META_2026.csv (Formato: MESES, AÑO, META, SUCURSAL)
+    df_meta = pd.DataFrame()
+    if os.path.exists("META_2026.csv"):
         try:
-            df_pct = pd.read_csv(archivo_pct, sep=";", encoding="latin-1")
-            if len(df_pct.columns) < 3:
-                df_pct = pd.read_csv(archivo_pct, sep=",", encoding="latin-1")
+            df_meta = pd.read_csv("META_2026.csv", sep=";", encoding="latin-1")
+            if len(df_meta.columns) < 2:
+                df_meta = pd.read_csv("META_2026.csv", sep=",", encoding="latin-1")
+            df_meta.columns = df_meta.columns.str.strip()
         except Exception:
             pass
-            
-    return df_mensual, df_pct
+
+    # Cargar METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv (Formato: DEPARTAMENTO, CATEGORIA, PORCENTAJE, SUCURSAL, AÑO)
+    df_pct = pd.DataFrame()
+    if os.path.exists("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"):
+        try:
+            df_pct = pd.read_csv("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv", sep=";", encoding="latin-1")
+            if len(df_pct.columns) < 2:
+                df_pct = pd.read_csv("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv", sep=",", encoding="latin-1")
+            df_pct.columns = df_pct.columns.str.strip()
+        except Exception:
+            pass
+
+    return df_meta, df_pct
 
 df, df_m2 = cargar_datos()
 
@@ -260,7 +259,7 @@ if df.empty:
     st.stop()
 
 df_inv = cargar_inventario()
-df_mensual, df_pct = cargar_metas_mensuales_y_porcentajes()
+df_meta_csv, df_pct_csv = cargar_metas_y_porcentajes_estructurados()
 
 df = df.rename(columns={
     'ImporteDivisaPrincipal': 'VENTA',
@@ -362,86 +361,82 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CALCULO DINAMICO DE METAS (MULTIPLICANDO MONTO MENSUAL * PORCENTAJE)
+# CALCULO DINAMICO DE METAS (CON ARCHIVOS ESTRUCTURADOS)
 # -------------------------------------------------------------------------
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
-if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
+if not df_meta_csv.empty and not df_pct_csv.empty:
     try:
-        df_mensual.columns = df_mensual.columns.str.strip()
-        col_meses = df_mensual.columns[0]
+        # Mapeo de nombres de sucursales si es necesario (ej. ALUMUNIOLOGO WED <-> ECOMMERCE / ALUMINIOLOGO WEB)
+        df_m_calc = df_meta_csv.copy()
+        df_m_calc.columns = df_m_calc.columns.str.strip()
         
-        df_m_sel = df_mensual[df_mensual[col_meses].astype(str).str.upper().str.strip().isin(meses_sel)]
+        # Normalizar sucursales en meta
+        df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].astype(str).str.upper().str.strip()
+        df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].replace({'ECOMMERCE': 'ALUMUNIOLOGO WED', 'ALUMINIOLOGO WEB': 'ALUMUNIOLOGO WED'})
         
-        map_cols_mensual = {
-            'CATIA': 'CATIA',
-            'LA GUAIRA': 'LA GUAIRA',
-            'MARICHE': 'MARICHE',
-            'GUATIRE': 'GUATIRE',
-            'ALUMUNIOLOGO WED': 'ECOMMERCE',
-            'DISTRIBUIDORES': 'DISTRIBUIDORES'
-        }
+        # Filtrar por año, meses seleccionados y sucursales seleccionadas
+        sucursales_up = [str(s).upper().strip() for s in sucursal_sel]
         
-        map_cols_pct = {
-            'CATIA': 'CATIA',
-            'LA GUAIRA': 'LA GUAIRA',
-            'MARICHE': 'MARICHE',
-            'GUATIRE': 'GUATIRE',
-            'ALUMUNIOLOGO WED': 'ALUMINIOLOGO WEB',
-            'DISTRIBUIDORES': 'DISTRIBUIDORES'
-        }
+        mask_m = (
+            (df_m_calc['AÑO'].astype(str) == str(año_sel)) &
+            (df_m_calc['MESES'].astype(str).str.upper().str.strip().isin(meses_sel)) &
+            (df_m_calc['SUCURSAL'].isin(sucursales_up))
+        )
+        df_m_fil = df_m_calc[mask_m].copy()
         
-        totales_sucursal_meta = {}
-        for suc in sucursal_sel:
-            suc_up = str(suc).upper().strip()
-            if suc_up in map_cols_mensual:
-                col_csv = map_cols_mensual[suc_up]
-                if col_csv in df_m_sel.columns:
-                    serie_limpia = (
-                        df_m_sel[col_csv]
-                        .astype(str)
-                        .str.replace(r'\s+', '', regex=True)
-                        .str.replace('.', '', regex=False)
-                        .str.replace(',', '.', regex=False)
-                        .str.replace('-', '0', regex=False)
-                    )
-                    suma_val = pd.to_numeric(serie_limpia, errors='coerce').fillna(0.0).sum()
-                    totales_sucursal_meta[suc_up] = suma_val
-
-        df_p = df_pct.copy()
-        df_p.columns = df_p.columns.str.strip()
-        df_p['DEPARTAMENTO'] = df_p['DEPARTAMENTO'].apply(normalizar_texto)
-        df_p['CATEGORIA'] = df_p['CATEGORIA'].apply(normalizar_texto)
+        # Limpiar y sumar montos de meta por sucursal
+        df_m_fil['META_NUM'] = (
+            df_m_fil['META']
+            .astype(str)
+            .str.replace(r'\s+', '', regex=True)
+            .str.replace('.', '', regex=False)
+            .str.replace(',', '.', regex=False)
+            .str.replace('-', '0', regex=False)
+        )
+        df_m_fil['META_NUM'] = pd.to_numeric(df_m_fil['META_NUM'], errors='coerce').fillna(0.0)
+        totales_meta_suc = df_m_fil.groupby('SUCURSAL')['META_NUM'].sum().to_dict()
         
-        df_p = df_p[df_p['DEPARTAMENTO'].isin(departamentos_sel)]
+        # Procesar porcentajes
+        df_p_calc = df_pct_csv.copy()
+        df_p_calc.columns = df_p_calc.columns.str.strip()
+        df_p_calc['SUCURSAL'] = df_p_calc['SUCURSAL'].astype(str).str.upper().str.strip()
+        df_p_calc['SUCURSAL'] = df_p_calc['SUCURSAL'].replace({'ECOMMERCE': 'ALUMUNIOLOGO WED', 'ALUMINIOLOGO WEB': 'ALUMUNIOLOGO WED'})
         
-        lista_metas_calculadas = []
+        df_p_calc['DEPARTAMENTO'] = df_p_calc['DEPARTAMENTO'].apply(normalizar_texto)
+        df_p_calc['CATEGORIA'] = df_p_calc['CATEGORIA'].apply(normalizar_texto)
         
-        for suc in sucursal_sel:
-            suc_up = str(suc).upper().strip()
-            monto_total_suc = totales_sucursal_meta.get(suc_up, 0.0)
-            if monto_total_suc > 0 and suc_up in map_cols_pct:
-                col_pct = map_cols_pct[suc_up]
-                if col_pct in df_p.columns:
-                    pct_serie = (
-                        df_p[col_pct]
-                        .astype(str)
-                        .str.replace('%', '', regex=False)
-                        .str.replace(r'\s+', '', regex=True)
-                        .str.replace(',', '.', regex=False)
-                    )
-                    pct_val = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0) / 100.0
-                    
-                    df_sub = df_p[['DEPARTAMENTO', 'CATEGORIA']].copy()
-                    df_sub['META'] = pct_val * monto_total_suc
-                    lista_metas_calculadas.append(df_sub)
-                    
-        if lista_metas_calculadas:
-            df_concat_metas = pd.concat(lista_metas_calculadas, ignore_index=True)
-            tabla_ant = df_concat_metas.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
+        # Limpiar porcentaje
+        pct_serie = (
+            df_p_calc['PORCENTAJE']
+            .astype(str)
+            .str.replace('%', '', regex=False)
+            .str.replace(r'\s+', '', regex=True)
+            .str.replace(',', '.', regex=False)
+        )
+        df_p_calc['PCT_VAL'] = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0) / 100.0
+        
+        # Filtrar por sucursales y departamentos seleccionados
+        df_p_fil = df_p_calc[
+            (df_p_calc['SUCURSAL'].isin(sucursales_up)) &
+            (df_p_calc['DEPARTAMENTO'].isin(departamentos_sel))
+        ].copy()
+        
+        # Calcular meta multiplicando monto total de la sucursal por su porcentaje
+        lista_metas = []
+        for suc in sucursales_up:
+            monto_suc = totales_meta_suc.get(suc, 0.0)
+            if monto_suc > 0:
+                df_s = df_p_fil[df_p_fil['SUCURSAL'] == suc].copy()
+                df_s['META'] = df_s['PCT_VAL'] * monto_suc
+                lista_metas.append(df_s[['DEPARTAMENTO', 'CATEGORIA', 'META']])
+                
+        if lista_metas:
+            df_concat_m = pd.concat(lista_metas, ignore_index=True)
+            tabla_ant = df_concat_m.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
             
     except Exception as e:
-        st.error(f"Error procesando las metas: {e}")
+        st.error(f"Error procesando metas estructuradas: {e}")
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
