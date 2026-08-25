@@ -4,6 +4,7 @@ import numpy as np
 import os
 import io
 import gdown
+import unicodedata
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -68,8 +69,15 @@ st.markdown("""
 st.markdown('<h1 class="main-title">📊 DASHBOARD COMERCIAL</h1>', unsafe_allow_html=True)
 
 # -----------------------------------
-# FUNCIONES DE FORMATEO REGIONAL
+# FUNCIONES DE FORMATEO Y LIMPIEZA
 # -----------------------------------
+def normalizar_texto(texto):
+    if pd.isna(texto):
+        return ""
+    # Eliminar acentos y estandarizar a mayúsculas sin espacios extra
+    texto_sin_tildes = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
+    return " ".join(texto_sin_tildes.upper().split())
+
 def formatear_moneda(valor):
     if pd.isna(valor):
         return "$ 0,00"
@@ -149,8 +157,7 @@ def cargar_datos():
         })
     
     if 'DEPARTAMENTO' in df.columns:
-        df['DEPARTAMENTO'] = df['DEPARTAMENTO'].astype(str).str.strip().str.upper()
-        df['DEPARTAMENTO'] = df['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
+        df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
     
     archivo_m2 = "METROS CUADRADOS POR CATEGORIA.csv"
     if not os.path.exists(archivo_m2):
@@ -160,11 +167,10 @@ def cargar_datos():
     df_m2.columns = df_m2.columns.str.strip()
     
     if 'DEPARTAMENTO' in df_m2.columns:
-        df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].ffill().astype(str).str.strip().str.upper()
-        df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
+        df_m2['DEPARTAMENTO'] = df_m2['DEPARTAMENTO'].ffill().apply(normalizar_texto)
         
     if 'CATEGORIA' in df_m2.columns:
-        df_m2['CATEGORIA'] = df_m2['CATEGORIA'].astype(str).str.strip().str.upper()
+        df_m2['CATEGORIA'] = df_m2['CATEGORIA'].apply(normalizar_texto)
         df_m2 = df_m2[(df_m2['CATEGORIA'] != 'NAN') & (df_m2['CATEGORIA'] != '')]
     
     if 'METROS' in df_m2.columns:
@@ -195,11 +201,10 @@ def cargar_inventario():
             df_inv['AÑO'] = pd.to_numeric(df_inv['AÑO'], errors='coerce').fillna(0).astype(int)
             
         if 'DEPARTAMENTO' in df_inv.columns:
-            df_inv['DEPARTAMENTO'] = df_inv['DEPARTAMENTO'].astype(str).str.strip().str.upper()
-            df_inv['DEPARTAMENTO'] = df_inv['DEPARTAMENTO'].str.replace('BAÃ\x91O', 'BAÑO', regex=False)
+            df_inv['DEPARTAMENTO'] = df_inv['DEPARTAMENTO'].apply(normalizar_texto)
             
         if 'DescrLineaNegocio' in df_inv.columns:
-            df_inv['CATEGORIA'] = df_inv['DescrLineaNegocio'].astype(str).str.strip().str.upper()
+            df_inv['CATEGORIA'] = df_inv['DescrLineaNegocio'].apply(normalizar_texto)
             
         if 'MES' in df_inv.columns:
             df_inv['MES'] = df_inv['MES'].astype(str).str.strip().str.upper()
@@ -264,9 +269,9 @@ df = df.rename(columns={
 })
 
 if 'CATEGORIA' in df.columns:
-    df['CATEGORIA'] = df['CATEGORIA'].astype(str).str.strip().str.upper()
+    df['CATEGORIA'] = df['CATEGORIA'].apply(normalizar_texto)
 if 'DEPARTAMENTO' in df.columns:
-    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
 
 # -----------------------------------
 # ESTRUCTURA DE ORDENAMIENTO ESTRICTO
@@ -405,8 +410,8 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
 
         df_p = df_pct.copy()
         df_p.columns = df_p.columns.str.strip()
-        df_p['DEPARTAMENTO'] = df_p['DEPARTAMENTO'].astype(str).str.strip().str.upper()
-        df_p['CATEGORIA'] = df_p['CATEGORIA'].astype(str).str.strip().str.upper()
+        df_p['DEPARTAMENTO'] = df_p['DEPARTAMENTO'].apply(normalizar_texto)
+        df_p['CATEGORIA'] = df_p['CATEGORIA'].apply(normalizar_texto)
         
         df_p = df_p[df_p['DEPARTAMENTO'].isin(departamentos_sel)]
         
@@ -418,7 +423,6 @@ if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
             if monto_total_suc > 0 and suc_up in map_cols_pct:
                 col_pct = map_cols_pct[suc_up]
                 if col_pct in df_p.columns:
-                    # Limpieza precisa de porcentajes (ej. '10,05%' -> 0.1005)
                     pct_serie = (
                         df_p[col_pct]
                         .astype(str)
