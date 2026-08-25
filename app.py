@@ -223,18 +223,32 @@ def cargar_inventario():
         return pd.DataFrame()
 
 @st.cache_data(ttl=60)
-def cargar_metas():
-    archivo_meta = "META 2026.xlsx"
-    if not os.path.exists(archivo_meta):
-        return pd.DataFrame()
-    try:
-        xls = pd.ExcelFile(archivo_meta)
-        df_meta = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-        if 'Etiquetas de fila' in df_meta.columns:
-            df_meta['MES'] = df_meta['Etiquetas de fila'].astype(str).str.strip().str.upper()
-        return df_meta
-    except Exception:
-        return pd.DataFrame()
+def cargar_metas_mensuales_y_porcentajes():
+    # 1. Cargar montos mensuales por sucursal ("META 2026.csv")
+    df_mensual = pd.DataFrame()
+    for archivo in ["META 2026.csv", "META_2026.csv"]:
+        if os.path.exists(archivo):
+            try:
+                df_mensual = pd.read_csv(archivo, sep=";", encoding="latin-1")
+                if len(df_mensual.columns) < 3:
+                    df_mensual = pd.read_csv(archivo, sep=",", encoding="latin-1")
+                if not df_mensual.empty:
+                    break
+            except Exception:
+                pass
+                
+    # 2. Cargar porcentajes por categoría y sucursal ("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv")
+    df_pct = pd.DataFrame()
+    archivo_pct = "METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"
+    if os.path.exists(archivo_pct):
+        try:
+            df_pct = pd.read_csv(archivo_pct, sep=";", encoding="latin-1")
+            if len(df_pct.columns) < 3:
+                df_pct = pd.read_csv(archivo_pct, sep=",", encoding="latin-1")
+        except Exception:
+            pass
+            
+    return df_mensual, df_pct
 
 df, df_m2 = cargar_datos()
 
@@ -243,7 +257,7 @@ if df.empty:
     st.stop()
 
 df_inv = cargar_inventario()
-df_metas_global = cargar_metas()
+df_mensual, df_pct = cargar_metas_mensuales_y_porcentajes()
 
 df = df.rename(columns={
     'ImporteDivisaPrincipal': 'VENTA',
@@ -253,6 +267,8 @@ df = df.rename(columns={
 
 if 'CATEGORIA' in df.columns:
     df['CATEGORIA'] = df['CATEGORIA'].astype(str).str.strip().str.upper()
+if 'DEPARTAMENTO' in df.columns:
+    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].astype(str).str.strip().str.upper()
 
 # -----------------------------------
 # ESTRUCTURA DE ORDENAMIENTO ESTRICTO
@@ -342,78 +358,125 @@ mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
 mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
-try:
-    df_año_anterior = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun]
-except ValueError:
-    df_año_anterior = pd.DataFrame()
+# -------------------------------------------------------------------------
+# CALCULO DINAMICO DE METAS (MULTIPLICANDO MONTO MENSUAL * PORCENTAJE)
+# -------------------------------------------------------------------------
+tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
-# -----------------------------------
-# CÁLCULO DINÁMICO DE LA META
-# -----------------------------------
-factor_meta = 2.0 
-if int(año_sel) == 2026 and not df_metas_global.empty:
-    mapeo_sucursales_meta = {
-        'CATIA': 'CATIA',
-        'LA GUAIRA': 'LA GUAIRA',
-        'MARICHE': 'MARICHE',
-        'GUATIRE': 'GUATIRE',
-        'ALUMUNIOLOGO WED': 'ECOMMERCE',
-        'DISTRIBUIDORES': 'DISTRIBUIDORES',
-    }
-    
-    meta_total_asignada = 0.0
-    if 'MES' in df_metas_global.columns:
-        df_meta_filtrada = df_metas_global[df_metas_global['MES'].isin(meses_sel)]
-        for suc in sucursal_sel:
-            col_meta = mapeo_sucursales_meta.get(suc)
-            if col_meta and col_meta in df_meta_filtrada.columns:
-                meta_total_asignada += df_meta_filtrada[col_meta].sum()
-                
-    # Ventas globales del año anterior para sacar pesos proporcionales sin filtro de departamento
-    mask_comun_global = mask_mes & mask_sucursal
+if int(año_sel) == 2026 and not df_mensual.empty and not df_pct.empty:
     try:
-        df_año_anterior_global = df[(df['AÑO'] == (int(año_sel) - 1)) & mask_comun_global]
-        ventas_ant_global_total = df_año_anterior_global['VENTA'].sum()
-    except ValueError:
-        ventas_ant_global_total = 0.0
+        # Limpiar nombres de columnas
+        df_mensual.columns = df_mensual.columns.str.strip()
+        col_meses = df_mensual.columns[0] # 'Etiquetas de fila'
         
-    if ventas_ant_global_total > 0:
-        factor_meta = meta_total_asignada / ventas_ant_global_total
-    else:
-        factor_meta = 0.0
+        # Filtrar los meses seleccionados en el sidebar
+        df_m_sel = df_mensual[df_mensual[col_meses].astype(str).str.upper().str.strip().isin(meses_sel)]
+        
+        # Mapeo de sucursales del sidebar a las columnas del archivo mensual
+        map_cols_mensual = {
+            'CATIA': 'CATIA',
+            'LA GUAIRA': 'LA GUAIRA',
+            'MARICHE': 'MARICHE',
+            'GUATIRE': 'GUATIRE',
+            'ALUMUNIOLOGO WED': 'ECOMMERCE',
+            'DISTRIBUIDORES': 'DISTRIBUIDORES'
+        }
+        
+        # Mapeo para los porcentajes
+        map_cols_pct = {
+            'CATIA': 'CATIA',
+            'LA GUAIRA': 'LA GUAIRA',
+            'MARICHE': 'MARICHE',
+            'GUATIRE': 'GUATIRE',
+            'ALUMUNIOLOGO WED': 'ALUMINIOLOGO WEB',
+            'DISTRIBUIDORES': 'DISTRIBUIDORES'
+        }
+        
+        # Calcular el total de la meta en dinero para cada sucursal seleccionada en los meses seleccionados
+        totales_sucursal_meta = {}
+        for suc in sucursal_sel:
+            suc_up = str(suc).upper().strip()
+            if suc_up in map_cols_mensual:
+                col_csv = map_cols_mensual[suc_up]
+                if col_csv in df_m_sel.columns:
+                    # Limpiar formato de dinero (ej. '153.935,00' -> 153935.00)
+                    serie_limpia = (
+                        df_m_sel[col_csv]
+                        .astype(str)
+                        .str.replace(r'\s+', '', regex=True)
+                        .str.replace('.', '', regex=False)
+                        .str.replace(',', '.', regex=False)
+                        .str.replace('-', '0', regex=False)
+                    )
+                    suma_val = pd.to_numeric(serie_limpia, errors='coerce').fillna(0.0).sum()
+                    totales_sucursal_meta[suc_up] = suma_val
+
+        # Preparar el dataframe de porcentajes
+        df_p = df_pct.copy()
+        df_p.columns = df_p.columns.str.strip()
+        df_p['DEPARTAMENTO'] = df_p['DEPARTAMENTO'].astype(str).str.strip().str.upper()
+        df_p['CATEGORIA'] = df_p['CATEGORIA'].astype(str).str.strip().str.upper()
+        
+        # Filtrar departamentos seleccionados
+        df_p = df_p[df_p['DEPARTAMENTO'].isin(departamentos_sel)]
+        
+        # Acumular las metas por categoría aplicando el porcentaje de cada sucursal
+        lista_metas_calculadas = []
+        
+        for suc in sucursal_sel:
+            suc_up = str(suc).upper().strip()
+            monto_total_suc = totales_sucursal_meta.get(suc_up, 0.0)
+            if monto_total_suc > 0 and suc_up in map_cols_pct:
+                col_pct = map_cols_pct[suc_up]
+                if col_pct in df_p.columns:
+                    # Limpiar porcentaje (ej. '10,05%' -> 0.1005)
+                    pct_serie = (
+                        df_p[col_pct]
+                        .astype(str)
+                        .str.replace('%', '', regex=False)
+                        .str.replace(r'\s+', '', regex=True)
+                        .str.replace('.', '', regex=False)
+                        .str.replace(',', '.', regex=False)
+                    )
+                    pct_val = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0) / 100.0
+                    
+                    df_sub = df_p[['DEPARTAMENTO', 'CATEGORIA']].copy()
+                    df_sub['META'] = pct_val * monto_total_suc
+                    lista_metas_calculadas.append(df_sub)
+                    
+        if lista_metas_calculadas:
+            df_concat_metas = pd.concat(lista_metas_calculadas, ignore_index=True)
+            tabla_ant = df_concat_metas.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
+            
+    except Exception as e:
+        st.error(f"Error procesando las metas: {e}")
 
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
-    # 1. Aplicar filtros al inventario a nivel nacional (sin filtrar por sucursal)
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
     df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
     if meses_validos_inv:
-        # El inventario corresponde a la foto del ÚLTIMO mes seleccionado
         ultimo_mes_existente = meses_validos_inv[-1]
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
-        # 2. Consolidar ventas globales de los meses anteriores seleccionados
         idx_ultimo = orden_meses.index(ultimo_mes_existente)
         meses_anteriores_en_seleccion = [m for m in meses_sel if orden_meses.index(m) < idx_ultimo]
         
         if len(meses_anteriores_en_seleccion) == 0:
-            # Si solo se seleccionó un mes, se usa el mes calendario inmediatamente anterior
             if idx_ultimo > 0:
                 meses_para_ventas = [(int(año_sel), orden_meses[idx_ultimo - 1])]
             else:
                 meses_para_ventas = [(int(año_sel) - 1, 'DICIEMBRE')]
         else:
-            # Si se seleccionaron múltiples meses, se suman las ventas de los meses seleccionados previos al último
             meses_para_ventas = [(int(año_sel), m) for m in meses_anteriores_en_seleccion]
             
         frames_ant = []
         for a_ant, m_ant in meses_para_ventas:
-            # Ventas globales (sin filtrar por sucursal) para mantener consistencia nacional
             frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel))]
             frames_ant.append(frame_ventas)
         
@@ -432,13 +495,6 @@ else:
 df_m2_sel = pd.DataFrame()
 if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
     df_m2_sel = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
-
-if not df_año_anterior.empty and 'DEPARTAMENTO' in df_año_anterior.columns and 'CATEGORIA' in df_año_anterior.columns:
-    tabla_ant = df_año_anterior.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-    tabla_ant = tabla_ant.rename(columns={'VENTA': 'META'})
-    tabla_ant['META'] = tabla_ant['META'] * factor_meta
-else:
-    tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if not df_filtrado.empty and 'DEPARTAMENTO' in df_filtrado.columns and 'CATEGORIA' in df_filtrado.columns:
     tabla_actual = df_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
