@@ -77,6 +77,35 @@ def normalizar_texto(texto):
     texto_sin_tildes = ''.join(c for c in unicodedata.normalize('NFD', str(texto)) if unicodedata.category(c) != 'Mn')
     return " ".join(texto_sin_tildes.upper().split())
 
+def limpiar_numero(valor):
+    """
+    Función súper robusta para leer números de Excel/CSV sin importar si están 
+    en formato europeo (189.723,02), gringo (189,723.02), o puro decimal (189723.02).
+    """
+    if pd.isna(valor):
+        return 0.0
+    v = str(valor).strip()
+    v = v.replace('%', '').replace('$', '').replace(' ', '')
+    if v == '-' or v == '': 
+        return 0.0
+    
+    if '.' in v and ',' in v:
+        if v.rfind(',') > v.rfind('.'):
+            v = v.replace('.', '').replace(',', '.')
+        else:
+            v = v.replace(',', '')
+    elif ',' in v and '.' not in v:
+        partes = v.split(',')
+        if len(partes) > 2:
+            v = "".join(partes[:-1]) + "." + partes[-1]
+        else:
+            v = v.replace(',', '.')
+            
+    try:
+        return float(v)
+    except:
+        return 0.0
+
 def formatear_moneda(valor):
     if pd.isna(valor):
         return "$ 0,00"
@@ -139,14 +168,7 @@ def cargar_datos():
     df.columns = df.columns.str.strip()
     
     if 'ImporteDivisaPrincipal' in df.columns:
-        df['ImporteDivisaPrincipal'] = (
-            df['ImporteDivisaPrincipal']
-            .astype(str)
-            .str.replace(r'\s+', '', regex=True)
-            .str.replace('.', '', regex=False)
-            .str.replace(',', '.', regex=False)
-        )
-        df['ImporteDivisaPrincipal'] = pd.to_numeric(df['ImporteDivisaPrincipal'], errors='coerce').fillna(0.0)
+        df['ImporteDivisaPrincipal'] = df['ImporteDivisaPrincipal'].apply(limpiar_numero)
     
     if 'Nombre' in df.columns:
         df['Nombre'] = df['Nombre'].str.replace('SUCURSAL ', '', regex=False).str.upper().str.strip()
@@ -173,13 +195,7 @@ def cargar_datos():
         df_m2 = df_m2[(df_m2['CATEGORIA'] != 'NAN') & (df_m2['CATEGORIA'] != '')]
     
     if 'METROS' in df_m2.columns:
-        df_m2['METROS'] = (
-            df_m2['METROS']
-            .astype(str)
-            .str.replace(r'\s+', '', regex=True)
-            .str.replace(',', '.', regex=False)
-        )
-        df_m2['METROS'] = pd.to_numeric(df_m2['METROS'], errors='coerce').fillna(0.0)
+        df_m2['METROS'] = df_m2['METROS'].apply(limpiar_numero)
         
     return df, df_m2
 
@@ -214,14 +230,7 @@ def cargar_inventario():
             df_inv['SUCURSAL'] = df_inv['SUCURSAL'].str.replace('SUCURSAL ', '', regex=False)
             
         if 'Valor' in df_inv.columns:
-            df_inv['Valor'] = (
-                df_inv['Valor']
-                .astype(str)
-                .str.replace(r'\s+', '', regex=True)
-                .str.replace('.', '', regex=False)
-                .str.replace(',', '.', regex=False)
-            )
-            df_inv['Valor'] = pd.to_numeric(df_inv['Valor'], errors='coerce').fillna(0.0)
+            df_inv['Valor'] = df_inv['Valor'].apply(limpiar_numero)
         return df_inv
     except Exception:
         return pd.DataFrame()
@@ -359,7 +368,7 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CALCULO DINAMICO DE METAS (NORMALIZADO AL 100% PARA CUADRE EXACTO)
+# CALCULO DINAMICO DE METAS (CON LIMPIEZA ROBUSTA Y NORMALIZACIÓN EXACTA)
 # -------------------------------------------------------------------------
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
@@ -379,15 +388,8 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         )
         df_m_fil = df_m_calc[mask_m].copy()
         
-        df_m_fil['META_NUM'] = (
-            df_m_fil['META']
-            .astype(str)
-            .str.replace(r'\s+', '', regex=True)
-            .str.replace('.', '', regex=False)
-            .str.replace(',', '.', regex=False)
-            .str.replace('-', '0', regex=False)
-        )
-        df_m_fil['META_NUM'] = pd.to_numeric(df_m_fil['META_NUM'], errors='coerce').fillna(0.0)
+        # Uso de la nueva limpieza robusta
+        df_m_fil['META_NUM'] = df_m_fil['META'].apply(limpiar_numero)
         totales_meta_suc = df_m_fil.groupby('SUCURSAL')['META_NUM'].sum().to_dict()
         
         df_p_calc = df_pct_csv.copy()
@@ -398,16 +400,11 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         df_p_calc['DEPARTAMENTO'] = df_p_calc['DEPARTAMENTO'].apply(normalizar_texto)
         df_p_calc['CATEGORIA'] = df_p_calc['CATEGORIA'].apply(normalizar_texto)
         
-        pct_serie = (
-            df_p_calc['PORCENTAJE']
-            .astype(str)
-            .str.replace('%', '', regex=False)
-            .str.replace(r'\s+', '', regex=True)
-            .str.replace(',', '.', regex=False)
-        )
-        df_p_calc['PCT_VAL'] = pd.to_numeric(pct_serie, errors='coerce').fillna(0.0)
+        # Limpieza robusta de los porcentajes
+        df_p_calc['PCT_VAL'] = df_p_calc['PORCENTAJE'].apply(limpiar_numero)
         
-        # Normalizar los porcentajes por sucursal para que sumen exactamente 100% y cuadren al centavo
+        # Normalizar los porcentajes por sucursal para que sumen exactamente el 100% (o 1.0)
+        # Esto previene diferencias de centavos y garantiza la fidelidad exacta de META_2026.csv
         suma_pcts_por_suc = df_p_calc.groupby('SUCURSAL')['PCT_VAL'].transform('sum')
         df_p_calc['PCT_VAL_NORM'] = np.where(suma_pcts_por_suc > 0, df_p_calc['PCT_VAL'] / suma_pcts_por_suc, 0.0)
         
