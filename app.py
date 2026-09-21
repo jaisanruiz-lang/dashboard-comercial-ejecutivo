@@ -140,8 +140,31 @@ def _es_html(contenido):
     inicio = contenido[:1000].lstrip().lower()
     return inicio.startswith(b"<!doctype html") or inicio.startswith(b"<html") or b"<html" in inicio
 
+def leer_csv_flexible(origen, sep=";"):
+    """
+    Lee un CSV sin importar si fue guardado en UTF-8 (Excel 'CSV UTF-8', GitHub)
+    o en ANSI/latin-1 (Excel 'CSV delimitado por comas'). Así la Ñ y las tildes
+    (ej. PUERTAS DE BAÑO) siempre se leen bien.
+    """
+    ultimo_error = None
+    for enc in ("utf-8-sig", "latin-1"):
+        try:
+            if hasattr(origen, "seek"):
+                origen.seek(0)
+            return pd.read_csv(origen, encoding=enc, sep=sep, low_memory=False)
+        except UnicodeDecodeError as e:
+            ultimo_error = e
+    raise ultimo_error
+
+def leer_csv_auto_sep(ruta):
+    """Lee con ';' y, si sale una sola columna, reintenta con ','."""
+    df_tmp = leer_csv_flexible(ruta, sep=";")
+    if len(df_tmp.columns) < 2:
+        df_tmp = leer_csv_flexible(ruta, sep=",")
+    return df_tmp
+
 def _leer_csv_ventas(origen):
-    return pd.read_csv(origen, encoding="latin-1", sep=";", low_memory=False)
+    return leer_csv_flexible(origen, sep=";")
 
 def descargar_ventas_drive(file_id):
     """
@@ -243,7 +266,7 @@ def cargar_datos():
     if not os.path.exists(archivo_m2):
         return df, pd.DataFrame(), errores
         
-    df_m2 = pd.read_csv(archivo_m2, encoding="latin-1", sep=";")
+    df_m2 = leer_csv_flexible(archivo_m2, sep=";")
     df_m2.columns = df_m2.columns.str.strip()
     
     if 'DEPARTAMENTO' in df_m2.columns:
@@ -264,7 +287,7 @@ def cargar_inventario():
     if not os.path.exists(archivo_inv):
         return pd.DataFrame()
     try:
-        df_inv = pd.read_csv(archivo_inv, encoding="latin-1", sep=";", low_memory=False)
+        df_inv = leer_csv_flexible(archivo_inv, sep=";")
         df_inv.columns = df_inv.columns.str.strip()
         
         col_año = [c for c in df_inv.columns if 'AÑO' in c.upper() or 'AÃ' in c.upper()]
@@ -299,9 +322,7 @@ def cargar_metas_y_porcentajes_estructurados():
     df_meta = pd.DataFrame()
     if os.path.exists("META_2026.csv"):
         try:
-            df_meta = pd.read_csv("META_2026.csv", sep=";", encoding="latin-1")
-            if len(df_meta.columns) < 2:
-                df_meta = pd.read_csv("META_2026.csv", sep=",", encoding="latin-1")
+            df_meta = leer_csv_auto_sep("META_2026.csv")
             df_meta.columns = df_meta.columns.str.strip()
         except Exception:
             pass
@@ -309,9 +330,7 @@ def cargar_metas_y_porcentajes_estructurados():
     df_pct = pd.DataFrame()
     if os.path.exists("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv"):
         try:
-            df_pct = pd.read_csv("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv", sep=";", encoding="latin-1")
-            if len(df_pct.columns) < 2:
-                df_pct = pd.read_csv("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv", sep=",", encoding="latin-1")
+            df_pct = leer_csv_auto_sep("METAS_POR_SUCURSAL_Y_CATEGORIA_PORCENTAJES.csv")
             df_pct.columns = df_pct.columns.str.strip()
         except Exception:
             pass
