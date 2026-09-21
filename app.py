@@ -133,31 +133,90 @@ def formatear_cobertura(valor):
 # -----------------------------------
 # CARGA Y LIMPIEZA DE DATA 
 # -----------------------------------
-@st.cache_data(ttl=60)
-def cargar_datos():
-    ID_DRIVE_VENTAS = "16XYtA31ebAE1Ad2Ldj7OV-CBbxO0IVSf"
-    ARCHIVO_TEMP_DRIVE = "ventas_drive_temp.csv"
+ID_DRIVE_VENTAS = "16XYtA31ebAE1Ad2Ldj7OV-CBbxO0IVSf"
 
-    df = pd.DataFrame()
+def _es_html(contenido):
+    """Detecta si Google Drive devolvió una página web (aviso/bloqueo) en lugar del CSV."""
+    inicio = contenido[:1000].lstrip().lower()
+    return inicio.startswith(b"<!doctype html") or inicio.startswith(b"<html") or b"<html" in inicio
+
+def _leer_csv_ventas(origen):
+    return pd.read_csv(origen, encoding="latin-1", sep=";", low_memory=False)
+
+def descargar_ventas_drive(file_id):
+    """
+    Descarga el CSV de Ventas desde Google Drive.
+    1) Enlace directo de drive.usercontent (salta el aviso de 'no se pudo analizar en busca de virus').
+    2) Respaldo con gdown.
+    Devuelve (DataFrame, lista_de_errores).
+    """
+    errores = []
+
+    # Intento 1: descarga directa con requests
     try:
-        gdown.download(id=ID_DRIVE_VENTAS, output=ARCHIVO_TEMP_DRIVE, quiet=True)
-        if os.path.exists(ARCHIVO_TEMP_DRIVE):
-            df = pd.read_csv(ARCHIVO_TEMP_DRIVE, encoding="latin-1", sep=";")
-    except Exception:
-        df = pd.DataFrame()
+        import requests
+        resp = requests.get(
+            "https://drive.usercontent.google.com/download",
+            params={"id": file_id, "export": "download", "confirm": "t"},
+            timeout=180,
+        )
+        resp.raise_for_status()
+        contenido = resp.content
+        if _es_html(contenido):
+            raise ValueError("Drive devolvió una página HTML en lugar del CSV (permisos o límite de descargas).")
+        df = _leer_csv_ventas(io.BytesIO(contenido))
+        if not df.empty:
+            return df, errores
+        errores.append("Descarga directa: el archivo llegó vacío.")
+    except Exception as e:
+        errores.append(f"Descarga directa: {e}")
+
+    # Intento 2: gdown
+    archivo_temp = "ventas_drive_temp.csv"
+    try:
+        gdown.download(id=file_id, output=archivo_temp, quiet=True)
+        if os.path.exists(archivo_temp):
+            with open(archivo_temp, "rb") as f:
+                if _es_html(f.read(1000)):
+                    raise ValueError("gdown descargó una página HTML en lugar del CSV.")
+            df = _leer_csv_ventas(archivo_temp)
+            if not df.empty:
+                return df, errores
+            errores.append("gdown: el archivo llegó vacío.")
+        else:
+            errores.append("gdown: no se generó el archivo.")
+    except Exception as e:
+        errores.append(f"gdown: {e}")
     finally:
-        if os.path.exists(ARCHIVO_TEMP_DRIVE):
+        if os.path.exists(archivo_temp):
             try:
-                os.remove(ARCHIVO_TEMP_DRIVE)
+                os.remove(archivo_temp)
             except Exception:
                 pass
 
+    return pd.DataFrame(), errores
+
+@st.cache_data(ttl=300, show_spinner="Cargando base de datos de Ventas...")
+def cargar_datos():
+    df, errores = descargar_ventas_drive(ID_DRIVE_VENTAS)
+
+    # Respaldo local en el repositorio (ventas.csv.gz pesa ~4 MB y sí cabe en GitHub)
     if df.empty:
-        try:
-            df = pd.read_csv("ventas.csv", encoding="latin-1", sep=";")
-        except Exception:
-            return pd.DataFrame(), pd.DataFrame()
-        
+        for archivo_local in ["ventas.csv.gz", "ventas.zip", "ventas.csv"]:
+            if os.path.exists(archivo_local):
+                try:
+                    df = _leer_csv_ventas(archivo_local)
+                    if not df.empty:
+                        break
+                except Exception as e:
+                    errores.append(f"{archivo_local}: {e}")
+        else:
+            if df.empty:
+                errores.append("No hay respaldo local (ventas.csv.gz / ventas.zip / ventas.csv) en el repositorio.")
+
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame(), errores
+
     col_año = [c for c in df.columns if 'AÑO' in c.upper() or 'AÃ' in c.upper()]
     if col_año:
         df = df.rename(columns={col_año[0]: 'AÑO'})
@@ -182,7 +241,7 @@ def cargar_datos():
     
     archivo_m2 = "METROS CUADRADOS POR CATEGORIA.csv"
     if not os.path.exists(archivo_m2):
-        return df, pd.DataFrame()
+        return df, pd.DataFrame(), errores
         
     df_m2 = pd.read_csv(archivo_m2, encoding="latin-1", sep=";")
     df_m2.columns = df_m2.columns.str.strip()
@@ -197,7 +256,7 @@ def cargar_datos():
     if 'METROS' in df_m2.columns:
         df_m2['METROS'] = df_m2['METROS'].apply(limpiar_numero)
         
-    return df, df_m2
+    return df, df_m2, errores
 
 @st.cache_data(ttl=60)
 def cargar_inventario():
@@ -205,7 +264,7 @@ def cargar_inventario():
     if not os.path.exists(archivo_inv):
         return pd.DataFrame()
     try:
-        df_inv = pd.read_csv(archivo_inv, encoding="latin-1", sep=";")
+        df_inv = pd.read_csv(archivo_inv, encoding="latin-1", sep=";", low_memory=False)
         df_inv.columns = df_inv.columns.str.strip()
         
         col_año = [c for c in df_inv.columns if 'AÑO' in c.upper() or 'AÃ' in c.upper()]
@@ -259,11 +318,20 @@ def cargar_metas_y_porcentajes_estructurados():
 
     return df_meta, df_pct
 
-df, df_m2 = cargar_datos()
+df, df_m2, errores_carga = cargar_datos()
 
 if df.empty:
     st.error("No se pudo cargar la base de datos de Ventas. Revisa la conexión o el archivo.")
+    with st.expander("Ver detalle técnico del error"):
+        for err in errores_carga:
+            st.write(f"- {err}")
+    if st.button("🔄 Reintentar carga"):
+        st.cache_data.clear()
+        st.rerun()
     st.stop()
+
+if errores_carga:
+    st.warning("⚠️ No se pudo descargar Ventas desde Google Drive; se está usando el respaldo del repositorio (puede no estar actualizado).")
 
 df_inv = cargar_inventario()
 df_meta_csv, df_pct_csv = cargar_metas_y_porcentajes_estructurados()
@@ -304,6 +372,7 @@ else:
 if 'MES' in df.columns:
     df['MES'] = pd.Categorical(df['MES'].astype(str).str.upper().str.strip(), categories=orden_meses, ordered=True)
 if 'SUCURSAL' in df.columns:
+    df['SUCURSAL'] = df['SUCURSAL'].where(df['SUCURSAL'].isin(orden_sucursales))
     df['SUCURSAL'] = pd.Categorical(df['SUCURSAL'], categories=[s.upper() for s in orden_sucursales], ordered=True)
 if 'DEPARTAMENTO' in df.columns:
     df['DEPARTAMENTO'] = pd.Categorical(df['DEPARTAMENTO'], categories=orden_departamentos, ordered=True)
@@ -712,7 +781,7 @@ with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
 
     st.markdown("---")
     
-    st.dataframe(tabla_estilizada, use_container_width=True, height=530, hide_index=True)
+    st.dataframe(tabla_estilizada, width="stretch", height=530, hide_index=True)
 
     st.markdown("### 📥 MENÚ DE DESCARGA DE REPORTES")
     st.info("El informe de Excel se descarga libre de filas de subtotales y con codificación contable nativa de miles/decimales, permitiéndote realizar operaciones matemáticas al instante.")
@@ -725,7 +794,7 @@ with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
         data=data_excel,
         file_name=f"Reporte_Comercial_{año_sel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        width="stretch"
     )
     
     data_pdf = generar_pdf_descarga(
@@ -741,5 +810,5 @@ with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
         data=data_pdf,
         file_name=f"Reporte_Comercial_{año_sel}.pdf",
         mime="application/pdf",
-        use_container_width=True
+        width="stretch"
     )
