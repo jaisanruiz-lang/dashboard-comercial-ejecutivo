@@ -1,6 +1,9 @@
 streamlit
 pandas
+numpy
+requests
 openpyxl
 gdown
+reportlab
 xhtml2pdf
 jinja2
