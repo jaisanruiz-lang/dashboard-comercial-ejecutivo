@@ -78,10 +78,6 @@ def normalizar_texto(texto):
     return " ".join(texto_sin_tildes.upper().split())
 
 def limpiar_numero(valor):
-    """
-    Función súper robusta para leer números de Excel/CSV sin importar si están 
-    en formato europeo (189.723,02), gringo (189,723.02), o puro decimal (189723.02).
-    """
     if pd.isna(valor):
         return 0.0
     v = str(valor).strip()
@@ -368,7 +364,7 @@ mask_comun = mask_mes & mask_sucursal & mask_depto
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
-# CALCULO DINAMICO DE METAS (CON LIMPIEZA ROBUSTA Y NORMALIZACIÓN EXACTA)
+# CALCULO DINAMICO DE METAS (COINCIDENCIA EXACTA Y NORMALIZACIÓN)
 # -------------------------------------------------------------------------
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 
@@ -378,17 +374,18 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         df_m_calc.columns = df_m_calc.columns.str.strip()
         df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].astype(str).str.upper().str.strip()
         df_m_calc['SUCURSAL'] = df_m_calc['SUCURSAL'].replace({'ECOMMERCE': 'ALUMUNIOLOGO WED', 'ALUMINIOLOGO WEB': 'ALUMUNIOLOGO WED'})
+        df_m_calc['MESES'] = df_m_calc['MESES'].astype(str).str.upper().str.strip()
         
         sucursales_up = [str(s).upper().strip() for s in sucursal_sel]
         
         mask_m = (
             (df_m_calc['AÑO'].astype(str) == str(año_sel)) &
-            (df_m_calc['MESES'].astype(str).str.upper().str.strip().isin(meses_sel)) &
+            (df_m_calc['MESES'].isin(meses_sel)) &
             (df_m_calc['SUCURSAL'].isin(sucursales_up))
         )
         df_m_fil = df_m_calc[mask_m].copy()
         
-        # Uso de la nueva limpieza robusta
+        # Limpieza robusta y exacta de la meta mensual
         df_m_fil['META_NUM'] = df_m_fil['META'].apply(limpiar_numero)
         totales_meta_suc = df_m_fil.groupby('SUCURSAL')['META_NUM'].sum().to_dict()
         
@@ -400,11 +397,9 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         df_p_calc['DEPARTAMENTO'] = df_p_calc['DEPARTAMENTO'].apply(normalizar_texto)
         df_p_calc['CATEGORIA'] = df_p_calc['CATEGORIA'].apply(normalizar_texto)
         
-        # Limpieza robusta de los porcentajes
         df_p_calc['PCT_VAL'] = df_p_calc['PORCENTAJE'].apply(limpiar_numero)
         
-        # Normalizar los porcentajes por sucursal para que sumen exactamente el 100% (o 1.0)
-        # Esto previene diferencias de centavos y garantiza la fidelidad exacta de META_2026.csv
+        # Normalización matemática exacta al 100% por sucursal
         suma_pcts_por_suc = df_p_calc.groupby('SUCURSAL')['PCT_VAL'].transform('sum')
         df_p_calc['PCT_VAL_NORM'] = np.where(suma_pcts_por_suc > 0, df_p_calc['PCT_VAL'] / suma_pcts_por_suc, 0.0)
         
@@ -417,7 +412,7 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         for suc in sucursales_up:
             monto_suc = totales_meta_suc.get(suc, 0.0)
             if monto_suc > 0:
-                df_s = df_p_fil[df_p_fil['SUCURSAL'] == suc].copy()
+                df_s = df_p_fil[df_p_fil['SUCURsal'] == suc].copy() if 'SUCURsal' in df_p_fil.columns else df_p_fil[df_p_fil['SUCURSAL'] == suc].copy()
                 df_s['META'] = df_s['PCT_VAL_NORM'] * monto_suc
                 lista_metas.append(df_s[['DEPARTAMENTO', 'CATEGORIA', 'META']])
                 
@@ -536,7 +531,7 @@ else:
 
 total_g_venta = tabla_base["VENTA"].sum() if not tabla_base.empty else 0.0
 total_g_meta = subtotales["META"].sum() if not subtotales.empty else 0.0
-total_g_m2 = subtotales["M2"].sum() if not subtotales.empty else 0.0
+total_g_m2 = subtotales["M2"].sum() if not tabla_base.empty else 0.0
 total_g_avance = (total_g_venta / total_g_meta) * 100 if total_g_meta > 0 else 0.0
 total_g_eficiencia = total_g_venta / total_g_m2 if total_g_m2 > 0 else 0.0
 
