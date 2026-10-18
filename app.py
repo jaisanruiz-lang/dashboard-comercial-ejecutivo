@@ -1331,10 +1331,13 @@ with tab_resumen:
 
 # ===== SUCURSALES =====
 with tab_sucursales:
+    # Solo las sucursales que vendieron en el periodo; las demás aparecen cuando tengan ventas
+    sucursales_con_venta = [s for s in sucursales_en_orden if ventas_suc.get(s, 0.0) > 0]
+
     with st.container(key="cc-card-suc"):
-        venta_s = ventas_suc.reindex(sucursales_en_orden, fill_value=0.0)
-        meta_s = metas_suc.reindex(sucursales_en_orden, fill_value=0.0)
-        avance_s = pd.Series(np.where(meta_s > 0, venta_s / meta_s.where(meta_s > 0, 1) * 100, np.nan), index=sucursales_en_orden)
+        venta_s = ventas_suc.reindex(sucursales_con_venta, fill_value=0.0)
+        meta_s = metas_suc.reindex(sucursales_con_venta, fill_value=0.0)
+        avance_s = pd.Series(np.where(meta_s > 0, venta_s / meta_s.where(meta_s > 0, 1) * 100, np.nan), index=sucursales_con_venta)
 
         if avance_s.notna().any():
             mejor = avance_s.idxmax()
@@ -1343,8 +1346,8 @@ with tab_sucursales:
             sub = "Venta de cada sucursal en el periodo"
         titulo_tarjeta("Venta y meta por sucursal", sub)
 
-        if venta_s.sum() > 0 or meta_s.sum() > 0:
-            etiquetas_s = [s.title() for s in sucursales_en_orden]
+        if sucursales_con_venta:
+            etiquetas_s = [s.title() for s in sucursales_con_venta]
             colores_s = [nivel_avance(a if pd.notna(a) else 0, m)[1] if m > 0 else NAVY_800 for a, m in zip(avance_s, meta_s)]
             fig = go.Figure()
             fig.add_bar(
@@ -1366,13 +1369,15 @@ with tab_sucursales:
             fig.update_yaxes(tickprefix="$ ", tickformat="~s")
             mostrar_grafico(estilo_figura(fig, 400), "graf_suc")
         else:
-            estado_vacio("No hay ventas ni metas para las sucursales seleccionadas.")
+            estado_vacio("Ninguna de las sucursales seleccionadas tiene ventas en este periodo.")
 
     with st.container(key="cc-card-calor"):
         titulo_tarjeta("Mapa de calor: avance por sucursal y mes", "Rojo: por debajo de la meta · Verde: meta superada. Pasa el cursor para ver venta y meta.")
-        if not metas_suc_mes_idx.empty and metas_suc_mes_idx.sum() > 0:
+        if not sucursales_con_venta:
+            estado_vacio("Ninguna de las sucursales seleccionadas tiene ventas en este periodo.")
+        elif not metas_suc_mes_idx.empty and metas_suc_mes_idx.sum() > 0:
             z, texto, datos = [], [], []
-            for s in sucursales_en_orden:
+            for s in sucursales_con_venta:
                 fila_z, fila_t, fila_d = [], [], []
                 for m in meses_en_orden:
                     v = float(ventas_suc_mes.get((s, m), 0.0))
@@ -1390,7 +1395,7 @@ with tab_sucursales:
                 texto.append(fila_t)
                 datos.append(fila_d)
             fig = go.Figure(go.Heatmap(
-                z=z, x=[m.title()[:3] for m in meses_en_orden], y=[s.title() for s in sucursales_en_orden],
+                z=z, x=[m.title()[:3] for m in meses_en_orden], y=[s.title() for s in sucursales_con_venta],
                 text=texto, texttemplate="%{text}", textfont=dict(size=12, color=TEXTO),
                 customdata=datos, xgap=3, ygap=3,
                 colorscale=[[0, "#E0574A"], [0.35, "#F2B8B0"], [0.5, "#FBF3D9"], [0.65, "#BFE5CF"], [1, "#2E9B67"]],
@@ -1399,7 +1404,7 @@ with tab_sucursales:
                 hovertemplate="<b>%{y} · %{x}</b><br>Venta: $ %{customdata[0]:,.2f}<br>Meta: $ %{customdata[1]:,.2f}<br>Avance: %{z:.1f} %<extra></extra>",
             ))
             fig.update_yaxes(autorange="reversed", showgrid=False)
-            mostrar_grafico(estilo_figura(fig, max(260, 46 * len(sucursales_en_orden) + 80), leyenda=False), "graf_calor")
+            mostrar_grafico(estilo_figura(fig, max(260, 46 * len(sucursales_con_venta) + 80), leyenda=False), "graf_calor")
         else:
             estado_vacio("No hay metas mensuales cargadas para las sucursales seleccionadas.")
 
