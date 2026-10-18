@@ -5,6 +5,7 @@ import os
 import io
 import gdown
 import unicodedata
+import plotly.graph_objects as go
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -13,40 +14,198 @@ from reportlab.lib import colors
 # -----------------------------------
 # CONFIGURACION DE LA PAGINA Y ESTILOS CSS
 # -----------------------------------
-st.set_page_config(page_title="Dashboard Comercial", layout="wide")
+st.set_page_config(page_title="Dashboard Comercial", page_icon=":material/insights:", layout="wide")
+
+# Paleta CuentaClara: azul marino = estructura, cobre = acción y énfasis,
+# verde / ámbar / rojo solo para bueno / cerca / malo.
+NAVY_950 = "#031523"
+NAVY_900 = "#052136"
+NAVY_800 = "#072C47"
+NAVY_700 = "#0E3E61"
+NAVY_600 = "#1A5480"
+NAVY_400 = "#5B87AB"
+NAVY_100 = "#E3ECF3"
+NAVY_50 = "#F2F6F9"
+COBRE_700 = "#7A4B15"
+COBRE_600 = "#965E1E"
+COBRE_500 = "#B5782F"
+COBRE_400 = "#D19549"
+COBRE_200 = "#EED6B6"
+COBRE_100 = "#F8EDDF"
+ARENA = "#E0B882"
+PIZARRA = "#8C9AA6"
+FONDO = "#FAF8F5"
+SUPERFICIE_2 = "#F3EFE9"
+BORDE = "#E6E0D7"
+DIVISOR = "#EEE9E1"
+TEXTO = "#0F1C28"
+TEXTO_SUAVE = "#5A6774"
+EXITO = "#1A7A4F"
+EXITO_BG = "#E5F4EC"
+ALERTA = "#8A6900"
+ALERTA_BG = "#FBF3D9"
+PELIGRO = "#C0392B"
+PELIGRO_BG = "#FBE9E7"
 
 st.markdown("""
     <style>
-    .main-title {
-        color: #1E3A8A; 
-        font-family: 'Helvetica Neue', Arial, sans-serif;
-        font-weight: bold;
-        padding-bottom: 10px;
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap');
+
+    :root {
+        --navy-900: #052136; --navy-800: #072C47; --navy-700: #0E3E61; --navy-600: #1A5480;
+        --navy-400: #5B87AB; --navy-100: #E3ECF3; --navy-50: #F2F6F9;
+        --copper-700: #7A4B15; --copper-600: #965E1E; --copper-500: #B5782F;
+        --copper-400: #D19549; --copper-200: #EED6B6; --copper-100: #F8EDDF;
+        --surface: #FFFFFF; --surface-2: #F3EFE9; --border: #E6E0D7; --divider: #EEE9E1;
+        --text: #0F1C28; --text-muted: #5A6774;
+        --success: #1A7A4F; --success-bg: #E5F4EC;
+        --warning: #8A6900; --warning-bg: #FBF3D9;
+        --danger: #C0392B; --danger-bg: #FBE9E7;
+        --shadow-1: 0 1px 2px rgba(7,44,71,0.06), 0 1px 3px rgba(7,44,71,0.06);
+        --shadow-2: 0 6px 18px rgba(7,44,71,0.10);
+        --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     }
-    div[data-testid="stMetric"] {
-        background-color: #F8FAFC;
-        border-left: 5px solid #10B981; 
-        padding: 12px;
-        border-radius: 4px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+
+    .block-container { padding-top: 2.2rem !important; padding-bottom: 3rem !important; max-width: 1500px; }
+    div[data-testid="stAppDeployButton"] { display: none; }
+
+    /* ---------- Encabezado ---------- */
+    .cc-hero {
+        position: relative; overflow: hidden;
+        background:
+            radial-gradient(circle at 92% 10%, rgba(209,149,73,0.22), transparent 42%),
+            linear-gradient(135deg, var(--navy-900) 0%, var(--navy-800) 55%, var(--navy-700) 100%);
+        border-radius: 14px; padding: 26px 30px; margin-bottom: 18px;
+        color: #F2F6F9; box-shadow: var(--shadow-2);
+        animation: cc-rise .5s var(--ease) both;
     }
-    div[data-testid="stMetric"] label {
-        color: #1E40AF !important;
-        font-weight: 600 !important;
+    .cc-hero::after {
+        content: ""; position: absolute; right: -40px; bottom: -60px; width: 220px; height: 220px;
+        border: 1px solid rgba(209,149,73,0.25); border-radius: 50%;
     }
+    .cc-hero-top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; position: relative; z-index: 1; }
+    .cc-eyebrow {
+        display: inline-flex; align-items: center; gap: 8px;
+        font-family: 'Manrope', sans-serif; font-size: 12px; font-weight: 700;
+        letter-spacing: .14em; text-transform: uppercase; color: var(--copper-400);
+    }
+    .cc-tri { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid var(--copper-400); display: inline-block; }
+    .cc-hero h1 {
+        font-family: 'Playfair Display', Georgia, serif !important; font-weight: 700 !important;
+        font-size: 38px !important; line-height: 1.1 !important; color: #FFFFFF !important;
+        margin: 6px 0 4px 0 !important; padding: 0 !important; letter-spacing: -0.01em;
+    }
+    .cc-hero p { margin: 0; color: #C9D6E2; font-size: 15px; }
+    .cc-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .cc-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
+        color: #F2F6F9; border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 600;
+        white-space: nowrap;
+    }
+    .cc-chip b { color: var(--copper-400); font-weight: 800; }
+
+    /* ---------- Tarjetas KPI ---------- */
+    .cc-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin: 4px 0 18px 0; }
+    @media (max-width: 1200px) { .cc-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 760px)  { .cc-kpis { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
+    .cc-kpi {
+        position: relative; background: var(--surface); border: 1px solid var(--border);
+        border-radius: 12px; padding: 16px 18px 14px 18px; box-shadow: var(--shadow-1);
+        transition: transform .2s var(--ease), box-shadow .2s var(--ease);
+        animation: cc-rise .5s var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms);
+        min-height: 128px; display: flex; flex-direction: column; gap: 6px;
+    }
+    .cc-kpi:hover { transform: translateY(-3px); box-shadow: var(--shadow-2); }
+    .cc-kpi.destacado { background: linear-gradient(180deg, var(--copper-100), #FFFFFF 70%); border-color: var(--copper-200); }
+    .cc-kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .cc-kpi-label { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); line-height: 1.3; }
+    .cc-kpi-icon {
+        flex: 0 0 auto; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+        background: var(--navy-50); color: var(--navy-800);
+    }
+    .cc-kpi.destacado .cc-kpi-icon { background: #FFFFFF; color: var(--copper-600); }
+    .cc-kpi-value {
+        font-size: clamp(18px, 1.45vw, 25px); font-weight: 800; color: var(--navy-800); letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums; line-height: 1.15; white-space: nowrap;
+    }
+    .cc-kpi-value.pequeno { font-size: 17px; font-weight: 700; color: var(--text-muted); white-space: normal; }
+    @media (max-width: 760px) { .cc-kpi-value { font-size: 26px; } }
+    .cc-kpi-foot { font-size: 12.5px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+    .cc-pill { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 8px; font-weight: 700; font-size: 12px; }
+    .cc-pill.ok { background: var(--success-bg); color: var(--success); }
+    .cc-pill.medio { background: var(--warning-bg); color: var(--warning); }
+    .cc-pill.bajo { background: var(--danger-bg); color: var(--danger); }
+    .cc-pill.neutro { background: var(--navy-50); color: var(--navy-600); }
+    .cc-bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; position: relative; }
+    .cc-bar > span { display: block; height: 100%; border-radius: 999px; animation: cc-fill 1s var(--ease) both; animation-delay: .25s; }
+
+    @keyframes cc-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes cc-fill { from { width: 0; } }
+
+    /* ---------- Tarjetas de gráficos ---------- */
+    div[class*="st-key-cc-card"] {
+        background: var(--surface); border: 1px solid var(--border) !important; border-radius: 12px;
+        box-shadow: var(--shadow-1); padding: 16px 18px 8px 18px;
+        animation: cc-rise .5s var(--ease) both;
+    }
+    .cc-card-title { font-size: 16px; font-weight: 800; color: var(--navy-800); margin: 0; line-height: 1.3; }
+    .cc-card-sub { font-size: 13.5px; color: var(--text-muted); margin: 2px 0 0 0; }
+    .cc-card-sub b { color: var(--copper-700); }
+
+    .cc-section { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px 0; }
+    .cc-section h3 { font-family: 'Playfair Display', Georgia, serif !important; font-size: 22px !important; color: var(--navy-800) !important; margin: 0 !important; padding: 0 !important; }
+    .cc-note {
+        background: var(--navy-50); border: 1px solid var(--navy-100); border-radius: 10px;
+        padding: 10px 14px; font-size: 13.5px; color: var(--navy-700); margin: 4px 0 12px 0;
+    }
+    .cc-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--text-muted); margin: 2px 0 8px 0; }
+    .cc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .cc-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+    /* ---------- Pestañas ---------- */
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--border); }
+    .stTabs [data-baseweb="tab"] {
+        height: 44px; padding: 0 14px; border-radius: 8px 8px 0 0; font-weight: 700; color: var(--text-muted);
+        transition: background .15s var(--ease), color .15s var(--ease);
+    }
+    .stTabs [data-baseweb="tab"]:hover { background: var(--copper-100); color: var(--copper-700); }
+    .stTabs [aria-selected="true"] { color: var(--navy-800) !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--copper-600) !important; height: 3px; }
+
+    /* ---------- Botones ---------- */
+    div[data-testid="stDownloadButton"] button, div[data-testid="stButton"] button {
+        min-height: 46px; font-weight: 700; transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+    }
+    div[data-testid="stDownloadButton"] button:hover, div[data-testid="stButton"] button:hover {
+        transform: translateY(-2px); box-shadow: var(--shadow-2);
+    }
+
+    /* ---------- Barra lateral (marino) ---------- */
+    section[data-testid="stSidebar"] { border-right: none; }
+    section[data-testid="stSidebar"] > div { background:
+        radial-gradient(circle at 0% 0%, rgba(209,149,73,0.14), transparent 40%), #072C47; }
+    .cc-side-title { display: flex; align-items: center; gap: 10px; margin: 4px 0 2px 0; }
+    .cc-side-title span { font-family: 'Playfair Display', Georgia, serif; font-size: 22px; font-weight: 700; color: #FFFFFF; }
+    .cc-side-sub { font-size: 12.5px; color: #9FB2C3; margin: 0 0 14px 0; }
     section[data-testid="stSidebar"] label {
-        font-size: 14px !important; 
-        font-weight: 600 !important;
-        color: #1E3A8A !important;
+        font-size: 12px !important;
+        font-weight: 700 !important;
+        letter-spacing: .08em; text-transform: uppercase;
+        color: var(--copper-400) !important;
     }
     section[data-testid="stSidebar"] div[data-baseweb="select"] {
         font-size: 14px !important;
     }
     section[data-testid="stSidebar"] span[data-baseweb="tag"] {
         font-size: 12px !important;
-        padding: 4px 8px !important; 
-        margin: 2px !important; 
+        padding: 4px 8px !important;
+        margin: 2px !important;
+        background-color: #965E1E !important;
+        color: #FFFFFF !important;
+        border-radius: 999px !important;
     }
+    section[data-testid="stSidebar"] span[data-baseweb="tag"] span, section[data-testid="stSidebar"] span[data-baseweb="tag"] svg { color: #FFFFFF !important; }
     ul[role="listbox"] {
         max-height: 60vh !important;
     }
@@ -57,16 +216,48 @@ st.markdown("""
         display: none !important;
     }
     section[data-testid="stSidebar"] div[data-testid="stMultiSelect"]:nth-of-type(3) div[data-baseweb="select"] > div:first-child {
-        min-height: 300px !important; 
-        align-items: flex-start !important; 
+        min-height: 300px !important;
+        align-items: flex-start !important;
         align-content: flex-start !important;
-        background-color: #FFFFFF !important; 
-        border-radius: 4px !important;
+        background-color: #0E3E61 !important;
+        border-radius: 8px !important;
+    }
+
+    @media (max-width: 640px) {
+        .cc-hero { padding: 20px 18px; }
+        .cc-hero h1 { font-size: 28px !important; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .cc-hero, .cc-kpi, .cc-bar > span, div[class*="st-key-cc-card"] { animation: none !important; }
+        .cc-kpi, div[data-testid="stDownloadButton"] button { transition: none !important; }
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-title">📊 DASHBOARD COMERCIAL</h1>', unsafe_allow_html=True)
+
+def html_limpio(contenido):
+    """Quita la sangría de cada línea para que st.markdown no lo tome como bloque de código."""
+    return "".join(linea.strip() for linea in contenido.splitlines())
+
+
+def render_hero(subtitulo="Ventas, metas, exhibición e inventario en un solo lugar.", chips=None):
+    chips_html = "".join(f'<span class="cc-chip">{c}</span>' for c in (chips or []))
+    return html_limpio(f"""
+        <div class="cc-hero">
+            <div class="cc-hero-top">
+                <div>
+                    <div class="cc-eyebrow"><span class="cc-tri"></span>Reporte ejecutivo</div>
+                    <h1>Dashboard Comercial</h1>
+                    <p>{subtitulo}</p>
+                </div>
+                <div class="cc-chips">{chips_html}</div>
+            </div>
+        </div>
+    """)
+
+
+hero_slot = st.empty()
+hero_slot.markdown(render_hero(), unsafe_allow_html=True)
 
 # -----------------------------------
 # FUNCIONES DE FORMATEO Y LIMPIEZA
@@ -130,8 +321,98 @@ def formatear_cobertura(valor):
     except:
         return "Sin data de inventario"
 
+def formatear_compacto(valor):
+    """$ 1,25 M / $ 845,3 K para etiquetas de gráficos."""
+    if pd.isna(valor):
+        return "$ 0"
+    tabla_cambio = str.maketrans({',': '.', '.': ','})
+    absoluto = abs(valor)
+    if absoluto >= 1_000_000:
+        return f"$ {f'{valor / 1_000_000:,.2f}'.translate(tabla_cambio)} M"
+    if absoluto >= 1_000:
+        return f"$ {f'{valor / 1_000:,.1f}'.translate(tabla_cambio)} K"
+    return f"$ {f'{valor:,.0f}'.translate(tabla_cambio)}"
+
 # -----------------------------------
-# CARGA Y LIMPIEZA DE DATA 
+# COMPONENTES VISUALES (KPIs, TARJETAS Y GRÁFICOS)
+# -----------------------------------
+ICONOS = {
+    "ventas": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 6-6"/><path d="M20 8V4h-4"/></svg>',
+    "meta": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>',
+    "avance": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M16 3h5v5"/></svg>',
+    "m2": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>',
+    "inventario": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
+}
+
+def nivel_avance(avance, meta):
+    """Semáforo del avance: (clase css, color, texto)."""
+    if meta <= 0:
+        return "neutro", NAVY_600, "Sin meta asignada"
+    if avance >= 100:
+        return "ok", EXITO, "Meta cumplida"
+    if avance >= 90:
+        return "medio", ALERTA, "Cerca de la meta"
+    return "bajo", PELIGRO, "Por debajo de la meta"
+
+def kpi_card(indice, etiqueta, valor, icono, pie_html="", barra=None, destacado=False, valor_pequeno=False):
+    clase = "cc-kpi destacado" if destacado else "cc-kpi"
+    clase_valor = "cc-kpi-value pequeno" if valor_pequeno else "cc-kpi-value"
+    barra_html = ""
+    if barra is not None:
+        ancho, color = barra
+        barra_html = f'<div class="cc-bar"><span style="width:{max(0.0, min(ancho, 100.0)):.1f}%; background:{color};"></span></div>'
+    return f"""
+        <div class="{clase}" style="--i:{indice}">
+            <div class="cc-kpi-head">
+                <div class="cc-kpi-label">{etiqueta}</div>
+                <div class="cc-kpi-icon">{ICONOS[icono]}</div>
+            </div>
+            <div class="{clase_valor}">{valor}</div>
+            {barra_html}
+            <div class="cc-kpi-foot">{pie_html}</div>
+        </div>
+    """
+
+def render_kpis(tarjetas):
+    st.markdown(html_limpio('<div class="cc-kpis">' + "".join(tarjetas) + '</div>'), unsafe_allow_html=True)
+
+def titulo_tarjeta(titulo, subtitulo=""):
+    sub = f'<p class="cc-card-sub">{subtitulo}</p>' if subtitulo else ""
+    st.markdown(html_limpio(f'<div><p class="cc-card-title">{titulo}</p>{sub}</div>'), unsafe_allow_html=True)
+
+CONFIG_GRAFICO = {
+    "displaylogo": False,
+    "locale": "es",
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
+    "toImageButtonOptions": {"format": "png", "scale": 2},
+}
+
+def estilo_figura(fig, alto=360, leyenda=True):
+    fig.update_layout(
+        height=alto,
+        margin=dict(l=8, r=8, t=12, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Manrope, sans-serif", size=12.5, color=TEXTO),
+        separators=",.",
+        hoverlabel=dict(bgcolor=NAVY_800, bordercolor=NAVY_800, font=dict(family="Manrope, sans-serif", size=13, color="#FFFFFF")),
+        showlegend=leyenda,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, bgcolor="rgba(0,0,0,0)"),
+        bargap=0.28,
+        transition=dict(duration=500, easing="cubic-in-out"),
+    )
+    fig.update_xaxes(showgrid=False, linecolor=BORDE, tickfont=dict(color=TEXTO_SUAVE), title=None, automargin=True)
+    fig.update_yaxes(gridcolor=DIVISOR, zeroline=False, tickfont=dict(color=TEXTO_SUAVE), title=None, automargin=True)
+    return fig
+
+def mostrar_grafico(fig, clave):
+    st.plotly_chart(fig, theme=None, config=CONFIG_GRAFICO, key=clave)
+
+def estado_vacio(mensaje):
+    st.markdown(html_limpio(f'<div class="cc-note">{mensaje}</div>'), unsafe_allow_html=True)
+
+# -----------------------------------
+# CARGA Y LIMPIEZA DE DATA
 # -----------------------------------
 ID_DRIVE_VENTAS = "16XYtA31ebAE1Ad2Ldj7OV-CBbxO0IVSf"
 
@@ -344,13 +625,13 @@ if df.empty:
     with st.expander("Ver detalle técnico del error"):
         for err in errores_carga:
             st.write(f"- {err}")
-    if st.button("🔄 Reintentar carga"):
+    if st.button("Reintentar carga", icon=":material/refresh:", type="primary"):
         st.cache_data.clear()
         st.rerun()
     st.stop()
 
 if errores_carga:
-    st.warning("⚠️ No se pudo descargar Ventas desde Google Drive; se está usando el respaldo del repositorio (puede no estar actualizado).")
+    st.warning("No se pudo descargar Ventas desde Google Drive; se está usando el respaldo del repositorio (puede no estar actualizado).", icon=":material/cloud_off:")
 
 df_inv = cargar_inventario()
 df_meta_csv, df_pct_csv = cargar_metas_y_porcentajes_estructurados()
@@ -400,7 +681,10 @@ if 'DEPARTAMENTO' in df.columns:
 # -----------------------------------
 # FILTROS LATERALES SIMPLES Y ROBUSTOS
 # -----------------------------------
-st.sidebar.header("Filtros de Análisis")
+st.sidebar.markdown(html_limpio("""
+    <div class="cc-side-title"><span class="cc-tri"></span><span>Filtros de análisis</span></div>
+    <p class="cc-side-sub">Todo el reporte se recalcula al cambiar un filtro.</p>
+"""), unsafe_allow_html=True)
 
 if 'AÑO' not in df.columns:
     st.stop()
@@ -436,16 +720,14 @@ departamentos_sel = st.sidebar.multiselect(
 )
 
 if not meses_sel or not sucursal_sel or not departamentos_sel:
-    with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("VENTAS TOTALES", "$ 0,00")
-        col2.metric("META FIJADA", "$ 0,00")
-        col3.metric("PORCENTAJE DE AVANCE", "0,00 %")
-        col4.metric("EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)", "$ 0,00")
-        col5.metric("COBERTURA DE INVENTARIO", "Sin data de inventario")
-        
-    st.markdown("---")
-    st.warning("⚠️ Debes seleccionar al menos un Mes, una Sucursal y un Departamento en la barra lateral para poder generar el reporte.")
+    render_kpis([
+        kpi_card(0, "Ventas totales", "$ 0,00", "ventas", "Sin datos para mostrar", destacado=True),
+        kpi_card(1, "Meta fijada", "$ 0,00", "meta", "Sin datos para mostrar"),
+        kpi_card(2, "Porcentaje de avance", "0,00 %", "avance", "Sin datos para mostrar", barra=(0, COBRE_500)),
+        kpi_card(3, "Eficiencia exhibición frontal (venta/m²)", "$ 0,00", "m2", "Sin datos para mostrar"),
+        kpi_card(4, "Cobertura de inventario", "Sin data de inventario", "inventario", "Sin datos para mostrar", valor_pequeno=True),
+    ])
+    st.warning("Debes seleccionar al menos un Mes, una Sucursal y un Departamento en la barra lateral para poder generar el reporte.", icon=":material/filter_alt:")
     st.stop()
 
 mask_mes = df['MES'].astype(str).isin(meses_sel)
@@ -459,6 +741,8 @@ df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 # CALCULO DINAMICO DE METAS (CON LIMPIEZA ROBUSTA Y NORMALIZACIÓN EXACTA)
 # -------------------------------------------------------------------------
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
+# Misma meta, repartida por sucursal y mes (solo para los gráficos)
+metas_suc_mes = pd.DataFrame(columns=['SUCURSAL', 'MES', 'META'])
 
 if not df_meta_csv.empty and not df_pct_csv.empty:
     try:
@@ -502,12 +786,24 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         ].copy()
         
         lista_metas = []
+        lista_metas_mes = []
         for suc in sucursales_up:
             monto_suc = totales_meta_suc.get(suc, 0.0)
             if monto_suc > 0:
                 df_s = df_p_fil[df_p_fil['SUCURSAL'] == suc].copy()
                 df_s['META'] = df_s['PCT_VAL_NORM'] * monto_suc
                 lista_metas.append(df_s[['DEPARTAMENTO', 'CATEGORIA', 'META']])
+
+                factor_deptos = df_s['PCT_VAL_NORM'].sum()
+                df_mes_s = df_m_fil[df_m_fil['SUCURSAL'] == suc].copy()
+                df_mes_s['MES'] = df_mes_s['MESES'].astype(str).str.upper().str.strip()
+                df_mes_s = df_mes_s.groupby('MES')['META_NUM'].sum().reset_index()
+                df_mes_s['META'] = df_mes_s['META_NUM'] * factor_deptos
+                df_mes_s['SUCURSAL'] = suc
+                lista_metas_mes.append(df_mes_s[['SUCURSAL', 'MES', 'META']])
+
+        if lista_metas_mes:
+            metas_suc_mes = pd.concat(lista_metas_mes, ignore_index=True)
                 
         if lista_metas:
             df_concat_m = pd.concat(lista_metas, ignore_index=True)
@@ -519,6 +815,7 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
 # --- FILTROS COBERTURA MULTI-MES (GLOBAL - SIN FILTRO DE SUCURSAL) ---
 df_inv_filtrado = pd.DataFrame()
 df_venta_mes_ant = pd.DataFrame()
+mes_inventario = None
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
@@ -527,6 +824,7 @@ if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.co
     
     if meses_validos_inv:
         ultimo_mes_existente = meses_validos_inv[-1]
+        mes_inventario = ultimo_mes_existente
         df_inv_filtrado = df_inv_base[df_inv_base['MES'] == ultimo_mes_existente]
         
         idx_ultimo = orden_meses.index(ultimo_mes_existente)
@@ -680,15 +978,24 @@ df_render_app = df_render_app.rename(columns={
 
 def aplicar_colores_matriz(row):
     if row['DEPARTAMENTO'] == 'TOTAL GENERAL':
-        return ['font-weight: bold; background-color: #A7F3D0; color: #047857; border-top: 2px double #047857; border-bottom: 2px double #047857;'] * len(row)
+        return [f'font-weight: bold; background-color: {NAVY_800}; color: #FFFFFF;'] * len(row)
     elif row['CATEGORÍA'] == 'TOTAL DEPARTAMENTO':
-        return ['font-weight: bold; background-color: #D1FAE5; color: #065F46; border-bottom: 2px solid #10B981;'] * len(row)
-    return ['background-color: #FFFFFF; color: #1F2937; border-bottom: 1px solid #E5E7EB;'] * len(row)
+        estilos = [f'font-weight: bold; background-color: {COBRE_100}; color: {COBRE_700};'] * len(row)
+    else:
+        estilos = [f'background-color: #FFFFFF; color: {TEXTO};'] * len(row)
+    # Semáforo en la columna AVANCE (verde cumplida, ámbar cerca, rojo por debajo)
+    meta_fila = tabla_final.loc[row.name, 'META'] if 'META' in tabla_final.columns else 0
+    avance_fila = tabla_final.loc[row.name, 'AVANCE'] if 'AVANCE' in tabla_final.columns else 0
+    if pd.notna(meta_fila) and meta_fila > 0 and 'AVANCE' in row.index:
+        _, color_av, _ = nivel_avance(avance_fila, meta_fila)
+        pos = list(row.index).index('AVANCE')
+        estilos[pos] = estilos[pos] + f' color: {color_av}; font-weight: bold;'
+    return estilos
 
 tabla_estilizada = (
     df_render_app.style
     .apply(aplicar_colores_matriz, axis=1)
-    .set_properties(**{'text-align': 'right', 'font-family': 'Arial'})
+    .set_properties(**{'text-align': 'right', 'font-family': 'Manrope, sans-serif'})
 )
 
 total_ventas = total_g_venta
@@ -730,11 +1037,12 @@ def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
     story = []
     
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor('#1E3A8A'), spaceAfter=8)
-    subtitle_style = ParagraphStyle('SubStyle', parent=styles['Normal'], fontSize=9, leading=13, textColor=colors.HexColor('#4B5563'), spaceAfter=12)
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor(NAVY_800), spaceAfter=8)
+    subtitle_style = ParagraphStyle('SubStyle', parent=styles['Normal'], fontSize=9, leading=13, textColor=colors.HexColor(TEXTO_SUAVE), spaceAfter=12)
     header_table_style = ParagraphStyle('HeaderTable', parent=styles['Normal'], fontSize=8, leading=11, fontName='Helvetica-Bold', textColor=colors.white, alignment=1)
     cell_table_style = ParagraphStyle('CellTable', parent=styles['Normal'], fontSize=8, leading=10, alignment=2)
-    cell_total_style = ParagraphStyle('CellTotal', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold', alignment=2)
+    cell_total_style = ParagraphStyle('CellTotal', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold', alignment=2, textColor=colors.HexColor(COBRE_700))
+    cell_total_general_style = ParagraphStyle('CellTotalGeneral', parent=cell_total_style, textColor=colors.white)
     
     story.append(Paragraph(f"<b>REPORTE EJECUTIVO COMERCIAL - AÑO {año}</b>", title_style))
     story.append(Paragraph(f"Filtros aplicados - Ventas Totales: {ventas} | Meta Dinámica: {meta} | Avance: {avance} | EFICIENCIA EXHIBICION FRONTAL (VENTA/M2): {eficiencia}", subtitle_style))
@@ -749,10 +1057,11 @@ def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
                     Paragraph("<b>COBERTURA DE INVENTARIO</b>", header_table_style)]]
     
     estilos_celdas = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(NAVY_800)),
+        ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor(COBRE_500)),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E5E7EB')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor(BORDE)),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]
@@ -762,7 +1071,12 @@ def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
         es_total_general = (row[0] == 'TOTAL GENERAL')
         es_subtotal = (row[1] == 'TOTAL DEPARTAMENTO')
         
-        style_actual = cell_total_style if (es_subtotal or es_total_general) else cell_table_style
+        if es_total_general:
+            style_actual = cell_total_general_style
+        elif es_subtotal:
+            style_actual = cell_total_style
+        else:
+            style_actual = cell_table_style
         
         data_tabla.append([
             Paragraph(str(row[0]), style_actual),
@@ -775,11 +1089,11 @@ def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
         ])
         
         if es_total_general:
-            estilos_celdas.append(('BACKGROUND', (0, idx_fila), (-1, idx_fila), colors.HexColor('#A7F3D0')))
-            estilos_celdas.append(('TEXTCOLOR', (0, idx_fila), (-1, idx_fila), colors.HexColor('#047857')))
+            estilos_celdas.append(('BACKGROUND', (0, idx_fila), (-1, idx_fila), colors.HexColor(NAVY_800)))
+            estilos_celdas.append(('TEXTCOLOR', (0, idx_fila), (-1, idx_fila), colors.white))
         elif es_subtotal:
-            estilos_celdas.append(('BACKGROUND', (0, idx_fila), (-1, idx_fila), colors.HexColor('#D1FAE5')))
-            estilos_celdas.append(('TEXTCOLOR', (0, idx_fila), (-1, idx_fila), colors.HexColor('#065F46')))
+            estilos_celdas.append(('BACKGROUND', (0, idx_fila), (-1, idx_fila), colors.HexColor(COBRE_100)))
+            estilos_celdas.append(('TEXTCOLOR', (0, idx_fila), (-1, idx_fila), colors.HexColor(COBRE_700)))
             
     pdf_table = Table(data_tabla, colWidths=[110, 110, 85, 85, 65, 115, 115])
     pdf_table.setStyle(TableStyle(estilos_celdas))
@@ -789,45 +1103,412 @@ def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
     buffer.seek(0)
     return buffer.getvalue()
 
-with st.expander("📊 ANÁLISIS - KPIs DE VENTAS", expanded=True):
-    col1, col2, col3, col4, col5 = st.columns(5)
+# -----------------------------------
+# DATOS PARA LA VISTA (ENCABEZADO, KPIs Y GRÁFICOS)
+# -----------------------------------
+def formatear_numero(valor):
+    base = f"{valor:,.2f}"
+    return base.translate(str.maketrans({',': '.', '.': ','}))
 
-    col1.metric("VENTAS TOTALES", formatear_moneda(total_ventas))
-    col2.metric("META FIJADA", formatear_moneda(meta_dinamica_total))
-    col3.metric("PORCENTAJE DE AVANCE", formatear_porcentaje(avance_general))
-    col4.metric("EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)", formatear_moneda(eficiencia_total))
-    col5.metric("COBERTURA DE INVENTARIO", formatear_cobertura(total_g_cobertura))
+def rango_meses(seleccion):
+    meses_orden = [m for m in orden_meses if m in seleccion]
+    if len(meses_orden) == 12:
+        return "Enero – Diciembre"
+    if len(meses_orden) == 1:
+        return meses_orden[0].title()
+    indices = [orden_meses.index(m) for m in meses_orden]
+    if indices == list(range(indices[0], indices[-1] + 1)):
+        return f"{meses_orden[0].title()} – {meses_orden[-1].title()}"
+    return f"{len(meses_orden)} meses"
 
-    st.markdown("---")
-    
+meses_en_orden = [m for m in orden_meses if m in meses_sel]
+sucursales_en_orden = [s for s in orden_sucursales if s in sucursal_sel]
+
+if not df_filtrado.empty:
+    ventas_mes = df_filtrado.groupby(df_filtrado['MES'].astype(str))['VENTA'].sum()
+    ventas_suc = df_filtrado.groupby(df_filtrado['SUCURSAL'].astype(str))['VENTA'].sum()
+    ventas_suc_mes = df_filtrado.groupby([df_filtrado['SUCURSAL'].astype(str), df_filtrado['MES'].astype(str)])['VENTA'].sum()
+else:
+    ventas_mes = pd.Series(dtype=float)
+    ventas_suc = pd.Series(dtype=float)
+    ventas_suc_mes = pd.Series(dtype=float)
+ventas_mes = ventas_mes.reindex(meses_en_orden, fill_value=0.0)
+
+if not metas_suc_mes.empty:
+    metas_mes = metas_suc_mes.groupby('MES')['META'].sum()
+    metas_suc = metas_suc_mes.groupby('SUCURSAL')['META'].sum()
+    metas_suc_mes_idx = metas_suc_mes.groupby(['SUCURSAL', 'MES'])['META'].sum()
+else:
+    metas_mes = pd.Series(dtype=float)
+    metas_suc = pd.Series(dtype=float)
+    metas_suc_mes_idx = pd.Series(dtype=float)
+metas_mes = metas_mes.reindex(meses_en_orden, fill_value=0.0)
+
+# Comparación justa: solo los meses que ya tienen ventas en el año seleccionado
+meses_con_venta = [m for m in meses_en_orden if ventas_mes[m] > 0]
+venta_año_anterior = df[(df['AÑO'] == int(año_sel) - 1) & mask_comun & df['MES'].astype(str).isin(meses_con_venta)]['VENTA'].sum()
+
+# --- Encabezado con la conclusión del periodo ---
+if meta_dinamica_total > 0:
+    diferencia_meta = total_ventas - meta_dinamica_total
+    if diferencia_meta >= 0:
+        conclusion = f"Llevas el <b style='color:{COBRE_400}'>{formatear_porcentaje(avance_general)}</b> de la meta: superada por {formatear_moneda(diferencia_meta)}."
+    else:
+        conclusion = f"Llevas el <b style='color:{COBRE_400}'>{formatear_porcentaje(avance_general)}</b> de la meta: faltan {formatear_moneda(-diferencia_meta)} para cumplirla."
+else:
+    conclusion = "No hay meta cargada para esta selección; se muestran solo las ventas."
+
+hero_slot.markdown(render_hero(conclusion, [
+    f"Año <b>{año_sel}</b>",
+    f"<b>{rango_meses(meses_sel)}</b>",
+    f"<b>{len(sucursal_sel)}</b> sucursales",
+    f"<b>{len(departamentos_sel)}</b> departamentos",
+]), unsafe_allow_html=True)
+
+# --- KPIs ---
+clase_av, color_av, texto_av = nivel_avance(avance_general, meta_dinamica_total)
+
+if venta_año_anterior > 0:
+    variacion = (total_ventas / venta_año_anterior - 1) * 100
+    clase_var = "ok" if variacion >= 0 else "bajo"
+    flecha = "▲" if variacion >= 0 else "▼"
+    pie_ventas = f'<span class="cc-pill {clase_var}">{flecha} {formatear_porcentaje(abs(variacion))}</span> vs. mismo periodo {int(año_sel) - 1}'
+else:
+    pie_ventas = "Periodo y filtros seleccionados"
+
+if meta_dinamica_total > 0:
+    if total_ventas >= meta_dinamica_total:
+        pie_meta = f'<span class="cc-pill ok">▲ Superada</span> por {formatear_moneda(total_ventas - meta_dinamica_total)}'
+    else:
+        pie_meta = f'Faltan <b style="color:{NAVY_800}">{formatear_moneda(meta_dinamica_total - total_ventas)}</b>'
+else:
+    pie_meta = "Sin meta para esta selección"
+
+pie_m2 = f"{formatear_numero(total_g_m2)} m² de exhibición" if total_g_m2 > 0 else "Sin metros cargados"
+
+if mes_inventario:
+    pie_cobertura = f"Inventario de {mes_inventario.title()} vs. venta anterior"
+else:
+    pie_cobertura = "Sin inventario para los meses elegidos"
+
+render_kpis([
+    kpi_card(0, "Ventas totales", formatear_moneda(total_ventas), "ventas", pie_ventas, destacado=True),
+    kpi_card(1, "Meta fijada", formatear_moneda(meta_dinamica_total), "meta", pie_meta),
+    kpi_card(2, "Porcentaje de avance", formatear_porcentaje(avance_general), "avance",
+             f'<span class="cc-pill {clase_av}">{texto_av}</span>', barra=(avance_general, color_av)),
+    kpi_card(3, "Eficiencia exhibición frontal (venta/m²)", formatear_moneda(eficiencia_total), "m2", pie_m2),
+    kpi_card(4, "Cobertura de inventario", formatear_cobertura(total_g_cobertura), "inventario", pie_cobertura,
+             valor_pequeno=pd.isna(total_g_cobertura)),
+])
+
+# -----------------------------------
+# PESTAÑAS DEL REPORTE
+# -----------------------------------
+tab_resumen, tab_sucursales, tab_departamentos, tab_detalle = st.tabs([
+    ":material/insights: Resumen",
+    ":material/storefront: Sucursales",
+    ":material/category: Departamentos",
+    ":material/table_chart: Detalle y descargas",
+])
+
+PALETA = [NAVY_800, COBRE_500, NAVY_400, ARENA, "#2A8C82", PIZARRA, NAVY_700, COBRE_400]
+
+# ===== RESUMEN =====
+with tab_resumen:
+    col_a, col_b = st.columns([2, 1], gap="medium")
+
+    with col_a:
+        with st.container(key="cc-card-mes"):
+            meses_con_meta = [m for m in meses_en_orden if metas_mes[m] > 0]
+            meses_cumplidos = [m for m in meses_con_meta if ventas_mes[m] >= metas_mes[m]]
+            if meses_con_meta:
+                sub = f"<b>{len(meses_cumplidos)} de {len(meses_con_meta)}</b> meses alcanzaron la meta"
+            else:
+                sub = "Ventas del periodo seleccionado"
+            titulo_tarjeta("Venta vs. meta por mes", sub)
+
+            if ventas_mes.sum() > 0 or metas_mes.sum() > 0:
+                avance_mes = np.where(metas_mes.values > 0, ventas_mes.values / np.where(metas_mes.values > 0, metas_mes.values, 1) * 100, np.nan)
+                etiquetas_mes = [m.title() for m in meses_en_orden]
+                fig = go.Figure()
+                fig.add_bar(
+                    x=etiquetas_mes, y=ventas_mes.values, name="Venta",
+                    marker=dict(color=NAVY_800, cornerradius=6),
+                    text=[formatear_compacto(v) if v > 0 else "" for v in ventas_mes.values], textposition="inside",
+                    insidetextanchor="end", textangle=0, textfont=dict(color="#FFFFFF", size=11),
+                    customdata=np.stack([metas_mes.values, avance_mes], axis=-1),
+                    hovertemplate="<b>%{x}</b><br>Venta: $ %{y:,.2f}<br>Meta: $ %{customdata[0]:,.2f}<br>Avance: %{customdata[1]:.1f} %<extra></extra>",
+                )
+                if metas_mes.sum() > 0:
+                    fig.add_scatter(
+                        x=etiquetas_mes, y=metas_mes.values, name="Meta", mode="lines+markers",
+                        line=dict(color=COBRE_500, width=3, shape="spline"),
+                        marker=dict(size=9, color="#FFFFFF", line=dict(color=COBRE_500, width=2.5)),
+                        hovertemplate="<b>%{x}</b><br>Meta: $ %{y:,.2f}<extra></extra>",
+                    )
+                fig.update_yaxes(tickprefix="$ ", tickformat="~s")
+                mostrar_grafico(estilo_figura(fig, 380), "graf_mes")
+            else:
+                estado_vacio("No hay ventas ni metas para los filtros seleccionados.")
+
+    with col_b:
+        with st.container(key="cc-card-gauge"):
+            titulo_tarjeta("Avance de la meta", texto_av)
+            tope = max(120.0, float(avance_general) + 10.0)
+            fig = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=float(avance_general),
+                number=dict(suffix=" %", valueformat=",.1f", font=dict(size=40, color=NAVY_800, family="Manrope, sans-serif")),
+                gauge=dict(
+                    axis=dict(range=[0, tope], ticksuffix=" %", tickcolor=BORDE, tickfont=dict(color=TEXTO_SUAVE, size=11)),
+                    bar=dict(color=color_av, thickness=0.32),
+                    bgcolor=SUPERFICIE_2, borderwidth=0,
+                    steps=[
+                        dict(range=[0, 90], color=PELIGRO_BG),
+                        dict(range=[90, 100], color=ALERTA_BG),
+                        dict(range=[100, tope], color=EXITO_BG),
+                    ],
+                    threshold=dict(line=dict(color=COBRE_600, width=4), thickness=0.85, value=100),
+                ),
+            ))
+            fig = estilo_figura(fig, 290, leyenda=False)
+            fig.update_layout(margin=dict(l=28, r=28, t=36, b=8))
+            mostrar_grafico(fig, "graf_gauge")
+            st.markdown(html_limpio(f"""
+                <div class="cc-legend">
+                    <span><i style="background:{PELIGRO_BG}; border:1px solid {PELIGRO}"></i>Menos de 90 %</span>
+                    <span><i style="background:{ALERTA_BG}; border:1px solid {ALERTA}"></i>90 – 99 %</span>
+                    <span><i style="background:{EXITO_BG}; border:1px solid {EXITO}"></i>100 % o más</span>
+                </div>
+            """), unsafe_allow_html=True)
+
+    col_c, col_d = st.columns(2, gap="medium")
+
+    with col_c:
+        with st.container(key="cc-card-mix"):
+            ventas_suc_orden = ventas_suc.reindex(sucursales_en_orden, fill_value=0.0)
+            ventas_suc_orden = ventas_suc_orden[ventas_suc_orden > 0]
+            if not ventas_suc_orden.empty:
+                lider = ventas_suc_orden.idxmax()
+                peso_lider = ventas_suc_orden.max() / ventas_suc_orden.sum() * 100
+                titulo_tarjeta("Mix de ventas por sucursal", f"<b>{lider.title()}</b> aporta el {formatear_porcentaje(peso_lider)} de la venta")
+                fig = go.Figure(go.Pie(
+                    labels=[s.title() for s in ventas_suc_orden.index], values=ventas_suc_orden.values,
+                    hole=0.62, sort=False, direction="clockwise",
+                    marker=dict(colors=PALETA, line=dict(color="#FFFFFF", width=2)),
+                    textinfo="percent", textfont=dict(color="#FFFFFF", size=12),
+                    hovertemplate="<b>%{label}</b><br>$ %{value:,.2f}<br>%{percent}<extra></extra>",
+                ))
+                fig.add_annotation(text=f"<b>{formatear_compacto(ventas_suc_orden.sum())}</b><br><span style='font-size:12px;color:{TEXTO_SUAVE}'>venta total</span>",
+                                   showarrow=False, font=dict(size=20, color=NAVY_800, family="Manrope, sans-serif"))
+                fig = estilo_figura(fig, 340)
+                fig.update_layout(legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02))
+                mostrar_grafico(fig, "graf_mix")
+            else:
+                titulo_tarjeta("Mix de ventas por sucursal")
+                estado_vacio("No hay ventas registradas para los filtros seleccionados.")
+
+    with col_d:
+        with st.container(key="cc-card-top"):
+            top_cat = tabla_base[tabla_base['VENTA'] > 0].sort_values('VENTA', ascending=False).head(10) if not tabla_base.empty else pd.DataFrame()
+            if not top_cat.empty:
+                primera = top_cat.iloc[0]
+                titulo_tarjeta("Top 10 categorías por venta", f"<b>{str(primera['CATEGORIA']).title()}</b> lidera con {formatear_compacto(primera['VENTA'])}")
+                top_cat = top_cat.iloc[::-1]
+                fig = go.Figure(go.Bar(
+                    x=top_cat['VENTA'], y=[str(c).title() for c in top_cat['CATEGORIA']], orientation="h",
+                    marker=dict(color=[COBRE_500 if i == len(top_cat) - 1 else NAVY_800 for i in range(len(top_cat))], cornerradius=5),
+                    text=[formatear_compacto(v) for v in top_cat['VENTA']], textposition="outside",
+                    textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
+                    customdata=np.stack([top_cat['DEPARTAMENTO'].astype(str).str.title(), top_cat['AVANCE']], axis=-1),
+                    hovertemplate="<b>%{y}</b><br>%{customdata[0]}<br>Venta: $ %{x:,.2f}<br>Avance: %{customdata[1]:.1f} %<extra></extra>",
+                ))
+                fig.update_xaxes(tickprefix="$ ", tickformat="~s", showgrid=True, gridcolor=DIVISOR,
+                                 range=[0, float(top_cat['VENTA'].max()) * 1.22])
+                fig.update_yaxes(showgrid=False)
+                mostrar_grafico(estilo_figura(fig, 340, leyenda=False), "graf_top")
+            else:
+                titulo_tarjeta("Top 10 categorías por venta")
+                estado_vacio("No hay ventas registradas para los filtros seleccionados.")
+
+# ===== SUCURSALES =====
+with tab_sucursales:
+    with st.container(key="cc-card-suc"):
+        venta_s = ventas_suc.reindex(sucursales_en_orden, fill_value=0.0)
+        meta_s = metas_suc.reindex(sucursales_en_orden, fill_value=0.0)
+        avance_s = pd.Series(np.where(meta_s > 0, venta_s / meta_s.where(meta_s > 0, 1) * 100, np.nan), index=sucursales_en_orden)
+
+        if avance_s.notna().any():
+            mejor = avance_s.idxmax()
+            sub = f"<b>{mejor.title()}</b> tiene el mejor avance: {formatear_porcentaje(avance_s[mejor])}"
+        else:
+            sub = "Venta de cada sucursal en el periodo"
+        titulo_tarjeta("Venta y meta por sucursal", sub)
+
+        if venta_s.sum() > 0 or meta_s.sum() > 0:
+            etiquetas_s = [s.title() for s in sucursales_en_orden]
+            colores_s = [nivel_avance(a if pd.notna(a) else 0, m)[1] if m > 0 else NAVY_800 for a, m in zip(avance_s, meta_s)]
+            fig = go.Figure()
+            fig.add_bar(
+                x=etiquetas_s, y=venta_s.values, name="Venta",
+                marker=dict(color=NAVY_800, cornerradius=6),
+                customdata=np.stack([meta_s.values, avance_s.fillna(0).values], axis=-1),
+                hovertemplate="<b>%{x}</b><br>Venta: $ %{y:,.2f}<br>Meta: $ %{customdata[0]:,.2f}<br>Avance: %{customdata[1]:.1f} %<extra></extra>",
+            )
+            if meta_s.sum() > 0:
+                fig.add_scatter(
+                    x=etiquetas_s, y=meta_s.values, name="Meta", mode="markers",
+                    marker=dict(symbol="line-ew", size=46, line=dict(color=COBRE_500, width=4)),
+                    hovertemplate="<b>%{x}</b><br>Meta: $ %{y:,.2f}<extra></extra>",
+                )
+                for etiqueta, v, m, a, c in zip(etiquetas_s, venta_s.values, meta_s.values, avance_s.values, colores_s):
+                    if m > 0:
+                        fig.add_annotation(x=etiqueta, y=max(v, m), text=f"<b>{formatear_porcentaje(a)}</b>", showarrow=False,
+                                           yshift=16, font=dict(color=c, size=12))
+            fig.update_yaxes(tickprefix="$ ", tickformat="~s")
+            mostrar_grafico(estilo_figura(fig, 400), "graf_suc")
+        else:
+            estado_vacio("No hay ventas ni metas para las sucursales seleccionadas.")
+
+    with st.container(key="cc-card-calor"):
+        titulo_tarjeta("Mapa de calor: avance por sucursal y mes", "Rojo: por debajo de la meta · Verde: meta superada. Pasa el cursor para ver venta y meta.")
+        if not metas_suc_mes_idx.empty and metas_suc_mes_idx.sum() > 0:
+            z, texto, datos = [], [], []
+            for s in sucursales_en_orden:
+                fila_z, fila_t, fila_d = [], [], []
+                for m in meses_en_orden:
+                    v = float(ventas_suc_mes.get((s, m), 0.0))
+                    mt = float(metas_suc_mes_idx.get((s, m), 0.0))
+                    if mt > 1 and m in meses_con_venta:
+                        a = v / mt * 100
+                        fila_z.append(a)
+                        fila_t.append(f"{a:.0f}%")
+                    else:
+                        a = np.nan
+                        fila_z.append(None)
+                        fila_t.append("—")
+                    fila_d.append([v, mt])
+                z.append(fila_z)
+                texto.append(fila_t)
+                datos.append(fila_d)
+            fig = go.Figure(go.Heatmap(
+                z=z, x=[m.title()[:3] for m in meses_en_orden], y=[s.title() for s in sucursales_en_orden],
+                text=texto, texttemplate="%{text}", textfont=dict(size=12, color=TEXTO),
+                customdata=datos, xgap=3, ygap=3,
+                colorscale=[[0, "#E0574A"], [0.35, "#F2B8B0"], [0.5, "#FBF3D9"], [0.65, "#BFE5CF"], [1, "#2E9B67"]],
+                zmin=60, zmax=140,
+                colorbar=dict(title=dict(text="Avance", side="top"), ticksuffix=" %", thickness=12, outlinewidth=0, len=0.9),
+                hovertemplate="<b>%{y} · %{x}</b><br>Venta: $ %{customdata[0]:,.2f}<br>Meta: $ %{customdata[1]:,.2f}<br>Avance: %{z:.1f} %<extra></extra>",
+            ))
+            fig.update_yaxes(autorange="reversed", showgrid=False)
+            mostrar_grafico(estilo_figura(fig, max(260, 46 * len(sucursales_en_orden) + 80), leyenda=False), "graf_calor")
+        else:
+            estado_vacio("No hay metas mensuales cargadas para las sucursales seleccionadas.")
+
+# ===== DEPARTAMENTOS =====
+with tab_departamentos:
+    col_e, col_f = st.columns([1, 1], gap="medium")
+
+    with col_e:
+        with st.container(key="cc-card-dep"):
+            dep = subtotales[subtotales['META'] > 0].copy() if not subtotales.empty else pd.DataFrame()
+            if not dep.empty:
+                dep = dep.sort_values('AVANCE')
+                cumplen = int((dep['AVANCE'] >= 100).sum())
+                titulo_tarjeta("Avance por departamento", f"<b>{cumplen} de {len(dep)}</b> departamentos cumplen la meta")
+                colores_d = [nivel_avance(a, m)[1] for a, m in zip(dep['AVANCE'], dep['META'])]
+                fig = go.Figure(go.Bar(
+                    x=dep['AVANCE'], y=dep['DEPARTAMENTO'].astype(str).str.title(), orientation="h",
+                    marker=dict(color=colores_d, cornerradius=5),
+                    text=[formatear_porcentaje(a) for a in dep['AVANCE']], textposition="outside",
+                    textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
+                    customdata=np.stack([dep['VENTA'], dep['META']], axis=-1),
+                    hovertemplate="<b>%{y}</b><br>Venta: $ %{customdata[0]:,.2f}<br>Meta: $ %{customdata[1]:,.2f}<br>Avance: %{x:.1f} %<extra></extra>",
+                ))
+                fig.add_vline(x=100, line=dict(color=COBRE_600, width=2, dash="dash"),
+                              annotation_text="Meta 100 %", annotation_position="top", annotation_font=dict(color=COBRE_700, size=11))
+                fig.update_xaxes(ticksuffix=" %", showgrid=True, gridcolor=DIVISOR)
+                fig.update_yaxes(showgrid=False)
+                mostrar_grafico(estilo_figura(fig, max(320, 30 * len(dep) + 90), leyenda=False), "graf_dep")
+            else:
+                titulo_tarjeta("Avance por departamento")
+                estado_vacio("No hay metas cargadas para los departamentos seleccionados.")
+
+    with col_f:
+        with st.container(key="cc-card-tree"):
+            titulo_tarjeta("Dónde se concentra la venta", "Haz clic en un departamento para ver sus categorías. El color indica el avance.")
+            arbol = tabla_base[tabla_base['VENTA'] > 0].copy() if not tabla_base.empty else pd.DataFrame()
+            if not arbol.empty:
+                colores_nivel = {"ok": "#BFE5CF", "medio": "#F4E4AE", "bajo": "#F2B8B0", "neutro": NAVY_100}
+                ids, etiquetas, padres, valores, colores_t, datos_t, texto_t = [], [], [], [], [], [], []
+                for depto, grupo in arbol.groupby(arbol['DEPARTAMENTO'].astype(str), sort=False):
+                    v_dep = grupo['VENTA'].sum()
+                    m_dep = grupo['META'].sum()
+                    a_dep = v_dep / m_dep * 100 if m_dep > 0 else 0.0
+                    ids.append(depto); etiquetas.append(depto.title()); padres.append("")
+                    valores.append(v_dep); colores_t.append(NAVY_800); datos_t.append([m_dep, a_dep]); texto_t.append("#FFFFFF")
+                    for _, fila in grupo.iterrows():
+                        clase_n, _, _ = nivel_avance(fila['AVANCE'], fila['META'])
+                        ids.append(f"{depto}/{fila['CATEGORIA']}"); etiquetas.append(str(fila['CATEGORIA']).title()); padres.append(depto)
+                        valores.append(fila['VENTA']); colores_t.append(colores_nivel[clase_n]); datos_t.append([fila['META'], fila['AVANCE']]); texto_t.append(TEXTO)
+                fig = go.Figure(go.Treemap(
+                    ids=ids, labels=etiquetas, parents=padres, values=valores, branchvalues="total",
+                    marker=dict(colors=colores_t, line=dict(color="#FFFFFF", width=2), cornerradius=4),
+                    customdata=datos_t, maxdepth=2,
+                    texttemplate="<b>%{label}</b><br>$ %{value:,.0f}",
+                    textfont=dict(family="Manrope, sans-serif", size=12, color=texto_t),
+                    pathbar=dict(visible=True, thickness=24, textfont=dict(color="#FFFFFF")),
+                    hovertemplate="<b>%{label}</b><br>Venta: $ %{value:,.2f}<br>Meta: $ %{customdata[0]:,.2f}<br>Avance: %{customdata[1]:.1f} %<br>%{percentRoot:.1%} del total<extra></extra>",
+                ))
+                mostrar_grafico(estilo_figura(fig, 470, leyenda=False), "graf_tree")
+            else:
+                estado_vacio("No hay ventas registradas para los departamentos seleccionados.")
+
+# ===== DETALLE Y DESCARGAS =====
+with tab_detalle:
+    st.markdown(html_limpio(f"""
+        <div class="cc-legend">
+            <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por departamento</span>
+            <span><i style="background:{NAVY_800}"></i>Total general</span>
+            <span><b style="color:{EXITO}">Avance</b>&nbsp;meta cumplida</span>
+            <span><b style="color:{ALERTA}">Avance</b>&nbsp;90 – 99 %</span>
+            <span><b style="color:{PELIGRO}">Avance</b>&nbsp;menos de 90 %</span>
+        </div>
+    """), unsafe_allow_html=True)
+
     st.dataframe(tabla_estilizada, width="stretch", height=530, hide_index=True)
 
-    st.markdown("### 📥 MENÚ DE DESCARGA DE REPORTES")
-    st.info("El informe de Excel se descarga libre de filas de subtotales y con codificación contable nativa de miles/decimales, permitiéndote realizar operaciones matemáticas al instante.")
-    
+    st.markdown(html_limpio("""
+        <div class="cc-section"><span class="cc-tri"></span><h3>Descarga de reportes</h3></div>
+        <div class="cc-note">El informe de Excel se descarga libre de filas de subtotales y con codificación contable nativa de miles/decimales, permitiéndote realizar operaciones matemáticas al instante.</div>
+    """), unsafe_allow_html=True)
+
     bot1, bot2 = st.columns(2)
-    
+
     data_excel = generar_excel_descarga_sumable(df_para_excel)
     bot1.download_button(
-        label="🟩 Descargar Reporte en Excel (Sumable)",
+        label="Descargar Reporte en Excel (Sumable)",
         data=data_excel,
         file_name=f"Reporte_Comercial_{año_sel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        icon=":material/table_view:",
+        type="primary",
         width="stretch"
     )
-    
+
     data_pdf = generar_pdf_descarga(
-        tabla_final, 
-        año_sel, 
-        formatear_moneda(total_ventas), 
-        formatear_moneda(meta_dinamica_total), 
-        formatear_porcentaje(avance_general), 
+        tabla_final,
+        año_sel,
+        formatear_moneda(total_ventas),
+        formatear_moneda(meta_dinamica_total),
+        formatear_porcentaje(avance_general),
         formatear_moneda(eficiencia_total)
     )
     bot2.download_button(
-        label="🟦 Descargar Reporte Completo en PDF",
+        label="Descargar Reporte Completo en PDF",
         data=data_pdf,
         file_name=f"Reporte_Comercial_{año_sel}.pdf",
         mime="application/pdf",
+        icon=":material/picture_as_pdf:",
         width="stretch"
     )
