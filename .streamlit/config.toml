@@ -1,0 +1,30 @@
+# Paleta CuentaClara: azul marino para la estructura, cobre para la accion y el enfasis.
+[theme]
+base = "light"
+primaryColor = "#965E1E"
+backgroundColor = "#FAF8F5"
+secondaryBackgroundColor = "#F3EFE9"
+textColor = "#0F1C28"
+linkColor = "#7A4B15"
+font = "Manrope:https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap"
+headingFont = "Playfair Display:https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&display=swap"
+baseRadius = "10px"
+buttonRadius = "8px"
+borderColor = "#E6E0D7"
+showWidgetBorder = true
+dataframeBorderColor = "#EEE9E1"
+dataframeHeaderBackgroundColor = "#072C47"
+dataframeHeaderTextColor = "#FFFFFF"
+greenColor = "#1A7A4F"
+redColor = "#C0392B"
+orangeColor = "#B5782F"
+yellowColor = "#8A6900"
+blueColor = "#1A5480"
+chartCategoricalColors = ["#072C47", "#B5782F", "#5B87AB", "#E0B882", "#2A8C82", "#8C9AA6", "#0E3E61", "#D19549"]
+
+[theme.sidebar]
+backgroundColor = "#072C47"
+secondaryBackgroundColor = "#0E3E61"
+textColor = "#F2F6F9"
+primaryColor = "#D19549"
+borderColor = "#1A5480"
