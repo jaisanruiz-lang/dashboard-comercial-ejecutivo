@@ -1161,8 +1161,6 @@ else:
 hero_slot.markdown(render_hero(conclusion, [
     f"Año <b>{año_sel}</b>",
     f"<b>{rango_meses(meses_sel)}</b>",
-    f"<b>{len(sucursal_sel)}</b> sucursales",
-    f"<b>{len(departamentos_sel)}</b> departamentos",
 ]), unsafe_allow_html=True)
 
 # --- KPIs ---
