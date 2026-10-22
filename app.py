@@ -1462,6 +1462,7 @@ VISTAS = {
     "Departamentos": ":material/category: Departamentos",
     "Detalle": ":material/table_chart: Detalle y descargas",
     "Articulos": ":material/inventory_2: Artículos",
+    "Areas": ":material/workspaces: Áreas",
 }
 
 with st.container(key="cc-nav"):
@@ -1781,8 +1782,8 @@ if vista == "Detalle":
     )
 
 
-# ===== ARTÍCULOS =====
-if vista == "Articulos":
+# ===== FUNCIONES COMUNES DE ARTÍCULOS Y ÁREAS =====
+if vista in ("Articulos", "Areas"):
     COLS_ART = {'ARTICULO', 'UNIDADES', 'UNIDAD_MEDIDA', 'CATEGORIA'}
 
     def abreviar(texto, largo=46):
@@ -1877,6 +1878,9 @@ if vista == "Articulos":
                     hoja[f'{letra}{fila}'].number_format = formato
         return salida.getvalue()
 
+
+# ===== ARTÍCULOS =====
+if vista == "Articulos":
     if not COLS_ART.issubset(df_filtrado.columns) or df_filtrado.empty:
         estado_vacio("No hay detalle de artículos para los filtros seleccionados.")
     else:
@@ -1939,74 +1943,46 @@ if vista == "Articulos":
 
             with col_t:
                 with st.container(key="cc-card-art-cat"):
-                    agrupar_por = st.segmented_control(
-                        "Agrupar por", options=["Área", "Categoría"], default="Área",
-                        key="art_agrupar", label_visibility="collapsed",
-                    ) or "Área"
-                    llave_graf = 'AREA' if agrupar_por == "Área" else 'CATEGORIA'
-                    nombre_graf = "áreas" if agrupar_por == "Área" else "categorías"
-                    todos_graf = resumen_articulos(base_art, llaves=(llave_graf,))
-                    todos_graf = todos_graf[todos_graf['VENTA'] != 0]
-                    por_cat = todos_graf.head(12)
+                    por_cat = resumen_articulos(base_art, llaves=('CATEGORIA',))
+                    por_cat = por_cat[por_cat['VENTA'] != 0].head(12)
                     titulo_tarjeta(
-                        f"Venta por {agrupar_por.lower()}",
-                        f"<b>{len(todos_graf)}</b> {nombre_graf} con venta en el periodo",
+                        "Venta por categoría",
+                        f"<b>{len(resumen_articulos(base_art, llaves=('CATEGORIA',)))}</b> categorías con venta en el periodo",
                     )
                     if por_cat.empty:
-                        estado_vacio(f"No hay {nombre_graf} con venta en el periodo.")
+                        estado_vacio("No hay categorías con venta en el periodo.")
                     else:
                         orden_cat = por_cat.iloc[::-1]
-                        cantidades = [
-                            " · ".join(p for p in (
-                                (formatear_entero(u) + " unid") if u and u > 0 else "",
-                                formatear_metros(m) if m and m > 0 else "",
-                            ) if p) or "—"
-                            for u, m in zip(orden_cat['UNIDADES'], orden_cat['M2'])
-                        ]
                         fig = go.Figure(go.Bar(
-                            x=orden_cat['VENTA'], y=[abreviar(c, 34) for c in orden_cat[llave_graf]],
+                            x=orden_cat['VENTA'], y=[abreviar(c, 34) for c in orden_cat['CATEGORIA']],
                             orientation="h", marker=dict(color=COBRE_500, cornerradius=5),
                             text=[formatear_moneda(v) for v in orden_cat['VENTA']], textposition="outside",
                             textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
-                            customdata=cantidades,
-                            hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<br>Cantidad: %{customdata}<extra></extra>",
+                            hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<extra></extra>",
                         ))
                         fig.update_xaxes(showgrid=True, gridcolor=DIVISOR, tickprefix="$ ")
                         fig.update_yaxes(showgrid=False)
                         mostrar_grafico(estilo_figura(fig, max(320, 26 * len(orden_cat) + 110), leyenda=False), "graf_art_cat")
 
-            # ---------- Vista 2: artículos dentro de un área y una categoría ----------
+            # ---------- Vista 2: artículos dentro de una categoría ----------
             with st.container(key="cc-card-art-detalle"):
                 titulo_tarjeta(
-                    "Artículos vendidos por área y categoría",
-                    "Elige un área y, si quieres, una categoría dentro de ella",
+                    "Artículos vendidos por categoría",
+                    "Elige una categoría para ver qué se vendió dentro de ella",
                 )
-                if 'AREA' not in base_art.columns:
-                    base_art['AREA'] = SIN_AREA
-                TODAS_AREAS, TODAS_CATS = "TODAS LAS ÁREAS", "TODAS LAS CATEGORÍAS"
-                areas_venta = resumen_articulos(base_art, llaves=('AREA',))
-                opciones_area = [TODAS_AREAS] + [str(a) for a in areas_venta['AREA']]
-                col_area, col_sel, col_bus = st.columns([1, 1, 1], gap="medium")
-                with col_area:
-                    area_sel = st.selectbox("Área", opciones_area, key="art_area")
-                base_area = base_art if area_sel == TODAS_AREAS else \
-                    base_art[base_art['AREA'].astype(str) == area_sel]
-
-                cats = resumen_articulos(base_area, llaves=('CATEGORIA',))
-                opciones = [TODAS_CATS] + [str(c) for c in cats['CATEGORIA']]
-                # Si la categoría elegida antes no existe en el área nueva, vuelve a "todas".
-                if st.session_state.get("art_categoria") not in opciones:
-                    st.session_state["art_categoria"] = TODAS_CATS
+                cats = resumen_articulos(base_art, llaves=('CATEGORIA',))
+                opciones = ["TODAS LAS CATEGORÍAS"] + [str(c) for c in cats['CATEGORIA']]
+                col_sel, col_bus = st.columns([1, 1], gap="medium")
                 with col_sel:
                     cat_sel = st.selectbox("Categoría", opciones, key="art_categoria")
                 with col_bus:
                     busqueda = st.text_input("Buscar artículo", key="art_busqueda",
                                              placeholder="Ej: angulo, vidrio, cerradura...")
 
-                detalle_base = base_area if cat_sel == TODAS_CATS else \
-                    base_area[base_area['CATEGORIA'].astype(str) == cat_sel]
+                detalle_base = base_art if cat_sel == "TODAS LAS CATEGORÍAS" else \
+                    base_art[base_art['CATEGORIA'].astype(str) == cat_sel]
 
-                llaves = ('ARTICULO', 'AREA', 'CATEGORIA') if cat_sel == TODAS_CATS else ('ARTICULO', 'AREA')
+                llaves = ('ARTICULO', 'CATEGORIA') if cat_sel == "TODAS LAS CATEGORÍAS" else ('ARTICULO',)
                 detalle = resumen_articulos(detalle_base, llaves=llaves)
                 detalle = detalle[detalle['VENTA'] != 0]
 
@@ -2015,7 +1991,7 @@ if vista == "Articulos":
                     detalle = detalle[detalle['ARTICULO'].astype(str).str.contains(patron, case=False, na=False, regex=False)]
 
                 if detalle.empty:
-                    estado_vacio("Ningún artículo coincide con la búsqueda en esta área o categoría.")
+                    estado_vacio("Ningún artículo coincide con la búsqueda en esta categoría.")
                 else:
                     resumen_linea = (
                         f"<b>{formatear_entero(len(detalle))}</b> artículos · "
@@ -2030,9 +2006,147 @@ if vista == "Articulos":
                     st.download_button(
                         label="Descargar artículos en Excel",
                         data=excel_articulos(detalle, mostrar_categoria=(cat_sel == "TODAS LAS CATEGORÍAS")),
-                        file_name=f"Articulos_{año_sel}_{(cat_sel if cat_sel != TODAS_CATS else area_sel).replace(' ', '_')[:30]}.xlsx",
+                        file_name=f"Articulos_{año_sel}_{cat_sel.replace(' ', '_')[:30]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch",
                         icon=":material/download:",
                         key="descarga_articulos",
+                    )
+
+# ===== ÁREAS =====
+if vista == "Areas":
+    if not COLS_ART.issubset(df_filtrado.columns) or df_filtrado.empty:
+        estado_vacio("No hay detalle por área para los filtros seleccionados.")
+    else:
+        # Igual que en Artículos: se incluyen las notas de crédito para cuadrar con Ventas Totales.
+        base_ar = df_filtrado[df_filtrado['VENTA'].notna()].copy()
+        if 'AREA' not in base_ar.columns:
+            base_ar['AREA'] = SIN_AREA
+
+        if base_ar.empty:
+            estado_vacio("No hay ventas en el periodo seleccionado.")
+        else:
+            resumen_areas = resumen_articulos(base_ar, llaves=('AREA',))
+            resumen_areas = resumen_areas[resumen_areas['VENTA'] != 0]
+            articulos_area = base_ar.groupby('AREA', observed=True)['ARTICULO'].nunique()
+            resumen_areas['ARTICULOS'] = resumen_areas['AREA'].map(articulos_area).fillna(0)
+            venta_areas = resumen_areas['VENTA'].sum()
+            lider_area = resumen_areas.iloc[0]
+            peso_lider = lider_area['VENTA'] / venta_areas * 100 if venta_areas > 0 else 0.0
+
+            # ---------- KPIs ----------
+            render_kpis([
+                kpi_card(0, "ÁREAS CON VENTA", formatear_entero(len(resumen_areas)), "inventario",
+                         f"En {rango_meses(meses_sel)} de {año_sel}"),
+                kpi_card(1, "ÁREA LÍDER", abreviar(lider_area['AREA'], 30), "avance",
+                         f"<b>{formatear_porcentaje(peso_lider)}</b> de la venta", valor_pequeno=True),
+                kpi_card(2, "UNIDADES VENDIDAS", formatear_entero(resumen_areas['UNIDADES'].sum()), "ventas",
+                         "Piezas, perfiles y kits (sin servicios)"),
+                kpi_card(3, "M² VENDIDOS", formatear_metros(resumen_areas['M2'].sum()), "m2",
+                         "Vidrio, espejos y láminas"),
+            ])
+
+            # ---------- Vista 1: venta y resumen por área ----------
+            col_g, col_t = st.columns([1, 1], gap="medium")
+
+            with col_g:
+                with st.container(key="cc-card-area-graf"):
+                    titulo_tarjeta(
+                        "Venta por área",
+                        f"<b>{len(resumen_areas)}</b> áreas con venta en el periodo",
+                    )
+                    orden_area = resumen_areas.iloc[::-1]
+                    cantidades = [
+                        " · ".join(p for p in (
+                            (formatear_entero(u) + " unid") if u and u > 0 else "",
+                            formatear_metros(m) if m and m > 0 else "",
+                        ) if p) or "—"
+                        for u, m in zip(orden_area['UNIDADES'], orden_area['M2'])
+                    ]
+                    fig = go.Figure(go.Bar(
+                        x=orden_area['VENTA'], y=[abreviar(a, 34) for a in orden_area['AREA']],
+                        orientation="h", marker=dict(color=COBRE_500, cornerradius=5),
+                        text=[formatear_moneda(v) for v in orden_area['VENTA']], textposition="outside",
+                        textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
+                        customdata=cantidades,
+                        hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<br>Cantidad: %{customdata}<extra></extra>",
+                    ))
+                    fig.update_xaxes(showgrid=True, gridcolor=DIVISOR, tickprefix="$ ")
+                    fig.update_yaxes(showgrid=False)
+                    mostrar_grafico(estilo_figura(fig, max(320, 30 * len(orden_area) + 110), leyenda=False), "graf_area_venta")
+
+            with col_t:
+                with st.container(key="cc-card-area-resumen"):
+                    titulo_tarjeta("Resumen por área", "Venta, cantidades y artículos distintos de cada área")
+                    tabla_areas = pd.DataFrame({
+                        'ÁREA': resumen_areas['AREA'].astype(str).str.title(),
+                        'VENTA': resumen_areas['VENTA'].apply(formatear_moneda),
+                        '% DEL TOTAL': [formatear_porcentaje(v / venta_areas * 100 if venta_areas > 0 else 0.0)
+                                        for v in resumen_areas['VENTA']],
+                        'UNIDADES': [formatear_entero(u) if u and u > 0 else "—" for u in resumen_areas['UNIDADES']],
+                        'M² VENDIDOS': resumen_areas['M2'].apply(formatear_metros),
+                        'ARTÍCULOS': resumen_areas['ARTICULOS'].apply(formatear_entero),
+                    })
+                    st.dataframe(tabla_areas, width="stretch", hide_index=True,
+                                 height=min(460, 36 * (len(tabla_areas) + 1) + 4))
+
+            # ---------- Vista 2: artículos de un área ----------
+            with st.container(key="cc-card-area-detalle"):
+                titulo_tarjeta(
+                    "Artículos vendidos por área",
+                    "Elige un área y, si quieres, una categoría dentro de ella",
+                )
+                TODAS_AREAS, TODAS_CATS = "TODAS LAS ÁREAS", "TODAS LAS CATEGORÍAS"
+                opciones_area = [TODAS_AREAS] + [str(a) for a in resumen_areas['AREA']]
+                col_area, col_cat, col_bus = st.columns([1, 1, 1], gap="medium")
+                with col_area:
+                    area_sel = st.selectbox("Área", opciones_area, key="area_area")
+                base_sel = base_ar if area_sel == TODAS_AREAS else \
+                    base_ar[base_ar['AREA'].astype(str) == area_sel]
+
+                cats_area = resumen_articulos(base_sel, llaves=('CATEGORIA',))
+                cats_area = cats_area[cats_area['VENTA'] != 0]
+                opciones_cat = [TODAS_CATS] + [str(c) for c in cats_area['CATEGORIA']]
+                # Si la categoría elegida antes no existe en el área nueva, vuelve a "todas".
+                if st.session_state.get("area_categoria") not in opciones_cat:
+                    st.session_state["area_categoria"] = TODAS_CATS
+                with col_cat:
+                    cat_area_sel = st.selectbox("Categoría", opciones_cat, key="area_categoria")
+                with col_bus:
+                    busqueda_area = st.text_input("Buscar artículo", key="area_busqueda",
+                                                  placeholder="Ej: angulo, vidrio, cerradura...")
+
+                if cat_area_sel != TODAS_CATS:
+                    base_sel = base_sel[base_sel['CATEGORIA'].astype(str) == cat_area_sel]
+
+                llaves_area = ('ARTICULO', 'AREA', 'CATEGORIA') if cat_area_sel == TODAS_CATS else ('ARTICULO', 'AREA')
+                detalle_area = resumen_articulos(base_sel, llaves=llaves_area)
+                detalle_area = detalle_area[detalle_area['VENTA'] != 0]
+
+                if busqueda_area.strip():
+                    patron = normalizar_texto(busqueda_area)
+                    detalle_area = detalle_area[detalle_area['ARTICULO'].astype(str).str.contains(patron, case=False, na=False, regex=False)]
+
+                if detalle_area.empty:
+                    estado_vacio("Ningún artículo coincide con la búsqueda en esta área.")
+                else:
+                    resumen_linea = (
+                        f"<b>{formatear_entero(len(detalle_area))}</b> artículos · "
+                        f"<b>{formatear_moneda(detalle_area['VENTA'].sum())}</b> en ventas"
+                    )
+                    st.markdown(html_limpio(f'<p class="cc-card-sub">{resumen_linea}</p>'), unsafe_allow_html=True)
+                    con_categoria = cat_area_sel == TODAS_CATS
+                    st.dataframe(
+                        tabla_presentable(detalle_area, mostrar_categoria=con_categoria),
+                        width="stretch", height=460, hide_index=True,
+                    )
+                    nombre_archivo = (cat_area_sel if cat_area_sel != TODAS_CATS else area_sel).replace(' ', '_')[:30]
+                    st.download_button(
+                        label="Descargar artículos del área en Excel",
+                        data=excel_articulos(detalle_area, mostrar_categoria=con_categoria),
+                        file_name=f"Areas_{año_sel}_{nombre_archivo}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                        icon=":material/download:",
+                        key="descarga_areas",
                     )
