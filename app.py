@@ -1283,6 +1283,115 @@ def generar_excel_descarga_sumable(dataframe):
                 worksheet[f'G{row}'].number_format = formato_numero_excel
     return output.getvalue()
 
+# -----------------------------------
+# REPORTE COMERCIAL POR ÁREA (mismos KPI del Detalle, agrupados por Área)
+# -----------------------------------
+COL_EFICIENCIA = 'EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)'
+
+def construir_tabla_areas(base):
+    """
+    Toma la tabla por departamento y categoría (con VENTA, META, M2, inventario) y la
+    agrupa por ÁREA: una fila por categoría, un TOTAL ÁREA por área y el TOTAL GENERAL.
+    """
+    columnas = ['ÁREA', 'DEPARTAMENTO', 'CATEGORIA', 'VENTA', 'META', 'AVANCE', COL_EFICIENCIA, 'COBERTURA']
+    if base is None or base.empty:
+        return pd.DataFrame(columns=columnas)
+
+    mapa = cargar_areas()
+    orden_areas = list(dict.fromkeys(mapa.values()))
+    hay_inventario = not df_inv_filtrado.empty and 'VENTA_MES_ANT' in base.columns
+
+    t = base.copy()
+    for col in ('VENTA', 'META', 'M2', 'Valor', 'VENTA_MES_ANT'):
+        t[col] = pd.to_numeric(t[col], errors='coerce').fillna(0.0) if col in t.columns else 0.0
+    t['DEPARTAMENTO'] = t['DEPARTAMENTO'].astype(str)
+    t['CATEGORIA'] = t['CATEGORIA'].astype(str)
+    t['ÁREA'] = t['CATEGORIA'].map(mapa).fillna(SIN_AREA)
+
+    def calcular_indicadores(d):
+        d['AVANCE'] = np.where(d['META'] > 0, d['VENTA'] / d['META'] * 100, 0.0)
+        d[COL_EFICIENCIA] = np.where(d['M2'] > 0, d['VENTA'] / d['M2'], 0.0)
+        d['COBERTURA'] = (np.where(d['VENTA_MES_ANT'] > 0, d['Valor'] / d['VENTA_MES_ANT'], 0.0)
+                          if hay_inventario else np.nan)
+        return d
+
+    t = calcular_indicadores(t)
+    t['ORDEN_REGISTRO'] = 0
+
+    sumas = ['VENTA', 'META', 'M2', 'Valor', 'VENTA_MES_ANT']
+    sub = t.groupby('ÁREA', observed=True)[sumas].sum().reset_index()
+    sub['DEPARTAMENTO'] = 'TOTAL ÁREA'
+    sub['CATEGORIA'] = '-'
+    sub = calcular_indicadores(sub)
+    sub['ORDEN_REGISTRO'] = 1
+
+    total = t[sumas].sum().to_frame().T
+    total['ÁREA'] = 'TOTAL GENERAL'
+    total['DEPARTAMENTO'] = 'TOTAL GENERAL'
+    total['CATEGORIA'] = 'REPORTE CONSOLIDADO'
+    total = calcular_indicadores(total)
+    total['ORDEN_REGISTRO'] = 2
+
+    final = pd.concat([t, sub, total], ignore_index=True)
+    extra = [a for a in final['ÁREA'].unique() if a not in orden_areas and a not in (SIN_AREA, 'TOTAL GENERAL')]
+    orden = [a for a in orden_areas if a != SIN_AREA] + extra + [SIN_AREA, 'TOTAL GENERAL']
+    final['_ORDEN_AREA'] = final['ÁREA'].map({a: i for i, a in enumerate(orden)})
+    final = final.sort_values(['_ORDEN_AREA', 'ORDEN_REGISTRO', 'DEPARTAMENTO', 'VENTA'],
+                              ascending=[True, True, True, False])
+    return final[columnas].reset_index(drop=True)
+
+def estilizar_tabla_areas(tabla):
+    """Misma presentación del Detalle: total por área en cobre, total general en azul y semáforo de avance."""
+    vista_t = tabla.copy()
+    vista_t['VENTA'] = vista_t['VENTA'].apply(formatear_moneda)
+    vista_t['META'] = vista_t['META'].apply(formatear_moneda)
+    vista_t['AVANCE'] = vista_t['AVANCE'].apply(formatear_porcentaje)
+    vista_t[COL_EFICIENCIA] = vista_t[COL_EFICIENCIA].apply(formatear_moneda)
+    vista_t['COBERTURA'] = vista_t['COBERTURA'].apply(formatear_cobertura)
+    vista_t = vista_t.rename(columns={'CATEGORIA': 'CATEGORÍA', 'COBERTURA': 'COBERTURA DE INVENTARIO'})
+
+    def colores(row):
+        if row['DEPARTAMENTO'] == 'TOTAL GENERAL':
+            return [f'font-weight: bold; background-color: {NAVY_800}; color: #FFFFFF;'] * len(row)
+        if row['DEPARTAMENTO'] == 'TOTAL ÁREA':
+            estilos = [f'font-weight: bold; background-color: {COBRE_100}; color: {COBRE_700};'] * len(row)
+        else:
+            estilos = [f'background-color: #FFFFFF; color: {TEXTO};'] * len(row)
+        meta_fila, avance_fila = tabla.loc[row.name, 'META'], tabla.loc[row.name, 'AVANCE']
+        if pd.notna(meta_fila) and meta_fila > 0:
+            _, color_av, _ = nivel_avance(avance_fila, meta_fila)
+            pos = list(row.index).index('AVANCE')
+            estilos[pos] = estilos[pos] + f' color: {color_av}; font-weight: bold;'
+        return estilos
+
+    return (vista_t.style.apply(colores, axis=1)
+            .set_properties(**{'text-align': 'right', 'font-family': 'Manrope, sans-serif'}))
+
+def generar_excel_areas(tabla):
+    """Excel sumable como el del Detalle: sin filas de TOTAL ÁREA y con números como números."""
+    output = io.BytesIO()
+    df_excel = tabla[tabla['DEPARTAMENTO'] != 'TOTAL ÁREA'].copy()
+    df_excel['AVANCE'] = df_excel['AVANCE'] / 100.0
+    df_excel['ÁREA'] = df_excel['ÁREA'].astype(str)
+    df_excel = df_excel.rename(columns={'CATEGORIA': 'CATEGORÍA', 'COBERTURA': 'COBERTURA DE INVENTARIO'})
+    if df_excel['COBERTURA DE INVENTARIO'].isna().all():
+        df_excel = df_excel.drop(columns=['COBERTURA DE INVENTARIO'])
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_excel.to_excel(writer, index=False, sheet_name='Reporte por Area')
+        hoja = writer.sheets['Reporte por Area']
+        anchos = {'ÁREA': 32, 'DEPARTAMENTO': 32, 'CATEGORÍA': 38, 'VENTA': 16, 'META': 16,
+                  'AVANCE': 11, COL_EFICIENCIA: 22, 'COBERTURA DE INVENTARIO': 16}
+        for i, col in enumerate(df_excel.columns):
+            letra = chr(ord('A') + i)
+            hoja.column_dimensions[letra].width = anchos.get(col, 14)
+            if col in ('ÁREA', 'DEPARTAMENTO', 'CATEGORÍA'):
+                continue
+            formato = '0.00%' if col == 'AVANCE' else '#,##0.00'
+            for fila in range(2, len(df_excel) + 2):
+                hoja[f'{letra}{fila}'].number_format = formato
+    return output.getvalue()
+
 def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -2090,7 +2199,34 @@ if vista == "Areas":
                     st.dataframe(tabla_areas, width="stretch", hide_index=True,
                                  height=min(460, 36 * (len(tabla_areas) + 1) + 4))
 
-            # ---------- Vista 2: artículos de un área ----------
+            # ---------- Vista 2: reporte comercial por área (venta, meta, avance, eficiencia, cobertura) ----------
+            tabla_areas_kpi = construir_tabla_areas(tabla_base)
+            st.markdown(html_limpio(f"""
+                <div class="cc-section"><span class="cc-tri"></span><h3>Reporte comercial por área</h3></div>
+                <div class="cc-legend">
+                    <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por área</span>
+                    <span><i style="background:{NAVY_800}"></i>Total general</span>
+                    <span><b style="color:{EXITO}">Avance</b>&nbsp;meta cumplida</span>
+                    <span><b style="color:{ALERTA}">Avance</b>&nbsp;90 – 99 %</span>
+                    <span><b style="color:{PELIGRO}">Avance</b>&nbsp;menos de 90 %</span>
+                </div>
+            """), unsafe_allow_html=True)
+            if tabla_areas_kpi.empty:
+                estado_vacio("No hay datos de venta o meta por área para los filtros seleccionados.")
+            else:
+                st.dataframe(estilizar_tabla_areas(tabla_areas_kpi), width="stretch", height=530, hide_index=True)
+                st.download_button(
+                    label="Descargar reporte por área en Excel (Sumable)",
+                    data=generar_excel_areas(tabla_areas_kpi),
+                    file_name=f"Reporte_Comercial_por_Area_{año_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/table_view:",
+                    type="primary",
+                    width="stretch",
+                    key="descarga_reporte_areas",
+                )
+
+            # ---------- Vista 3: artículos de un área ----------
             with st.container(key="cc-card-area-detalle"):
                 titulo_tarjeta(
                     "Artículos vendidos por área",
