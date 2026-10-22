@@ -787,6 +787,31 @@ def cargar_datos():
         
     return df, df_m2, errores
 
+ARCHIVO_AREAS = "AREAS_RETAIL_2026.xlsx"
+SIN_AREA = "SIN ÁREA"
+
+@st.cache_data(ttl=300)
+def cargar_areas():
+    """
+    Lee AREAS_RETAIL_2026.xlsx (ÁREA | DEPARTAMENTO | CATEGORIA) y devuelve un diccionario
+    CATEGORIA -> ÁREA. La categoría basta, porque cada una pertenece a una sola área.
+    Si el archivo no está, el dashboard sigue funcionando y todo queda en "SIN ÁREA".
+    """
+    if not os.path.exists(ARCHIVO_AREAS):
+        return {}
+    try:
+        areas = pd.read_excel(ARCHIVO_AREAS, dtype=str)
+    except Exception:
+        return {}
+    areas.columns = [normalizar_texto(c) for c in areas.columns]
+    if 'AREA' not in areas.columns or 'CATEGORIA' not in areas.columns:
+        return {}
+    areas = areas.dropna(subset=['AREA', 'CATEGORIA'])
+    areas['CATEGORIA'] = areas['CATEGORIA'].apply(normalizar_texto)
+    areas['AREA'] = areas['AREA'].astype(str).str.strip().str.upper()
+    areas = areas[areas['CATEGORIA'].ne('')].drop_duplicates('CATEGORIA')
+    return dict(zip(areas['CATEGORIA'], areas['AREA']))
+
 @st.cache_data(ttl=60)
 def cargar_inventario():
     archivo_inv = "INVENTARIO.csv"
@@ -869,6 +894,8 @@ df = df.rename(columns={
 
 if 'CATEGORIA' in df.columns:
     df['CATEGORIA'] = df['CATEGORIA'].apply(normalizar_texto)
+    # Área comercial de cada categoría (AREAS_RETAIL_2026.xlsx).
+    df['AREA'] = df['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
 if 'DEPARTAMENTO' in df.columns:
     df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
 
@@ -1802,6 +1829,8 @@ if vista == "Articulos":
         total = tabla['VENTA'].sum()
         salida = pd.DataFrame()
         salida['ARTÍCULO'] = tabla['ARTICULO'].astype(str).str.title()
+        if 'AREA' in tabla.columns:
+            salida['ÁREA'] = tabla['AREA'].astype(str).str.title()
         if mostrar_categoria and 'CATEGORIA' in tabla.columns:
             salida['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
         unidades = tabla['UNIDADES'].where(tabla['UNIDADES'] > 0)
@@ -1821,6 +1850,8 @@ if vista == "Articulos":
         total = tabla['VENTA'].sum()
         export = pd.DataFrame()
         export['ARTÍCULO'] = tabla['ARTICULO'].astype(str).str.title()
+        if 'AREA' in tabla.columns:
+            export['ÁREA'] = tabla['AREA'].astype(str).str.title()
         if mostrar_categoria and 'CATEGORIA' in tabla.columns:
             export['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
         # Lo que se vende por m² deja la celda de unidades vacía en vez de poner 0.
@@ -1835,12 +1866,12 @@ if vista == "Articulos":
             export.to_excel(writer, index=False, sheet_name='Articulos')
             hoja = writer.sheets['Articulos']
             letras = {c: chr(ord('A') + i) for i, c in enumerate(export.columns)}
-            anchos = {'ARTÍCULO': 52, 'CATEGORÍA': 30, 'UNIDADES': 12,
+            anchos = {'ARTÍCULO': 52, 'ÁREA': 30, 'CATEGORÍA': 30, 'UNIDADES': 12,
                       'M² VENDIDOS': 14, 'VENTA': 16, '% DEL TOTAL': 13, 'PEDIDOS': 11}
             for col, letra in letras.items():
                 hoja.column_dimensions[letra].width = anchos.get(col, 14)
                 formato = {'UNIDADES': '#,##0', 'PEDIDOS': '#,##0', '% DEL TOTAL': '0.00%'}.get(col, '#,##0.00')
-                if col in ('ARTÍCULO', 'CATEGORÍA'):
+                if col in ('ARTÍCULO', 'ÁREA', 'CATEGORÍA'):
                     continue
                 for fila in range(2, len(export) + 2):
                     hoja[f'{letra}{fila}'].number_format = formato
@@ -1908,46 +1939,74 @@ if vista == "Articulos":
 
             with col_t:
                 with st.container(key="cc-card-art-cat"):
-                    por_cat = resumen_articulos(base_art, llaves=('CATEGORIA',))
-                    por_cat = por_cat[por_cat['VENTA'] != 0].head(12)
+                    agrupar_por = st.segmented_control(
+                        "Agrupar por", options=["Área", "Categoría"], default="Área",
+                        key="art_agrupar", label_visibility="collapsed",
+                    ) or "Área"
+                    llave_graf = 'AREA' if agrupar_por == "Área" else 'CATEGORIA'
+                    nombre_graf = "áreas" if agrupar_por == "Área" else "categorías"
+                    todos_graf = resumen_articulos(base_art, llaves=(llave_graf,))
+                    todos_graf = todos_graf[todos_graf['VENTA'] != 0]
+                    por_cat = todos_graf.head(12)
                     titulo_tarjeta(
-                        "Venta por categoría",
-                        f"<b>{len(resumen_articulos(base_art, llaves=('CATEGORIA',)))}</b> categorías con venta en el periodo",
+                        f"Venta por {agrupar_por.lower()}",
+                        f"<b>{len(todos_graf)}</b> {nombre_graf} con venta en el periodo",
                     )
                     if por_cat.empty:
-                        estado_vacio("No hay categorías con venta en el periodo.")
+                        estado_vacio(f"No hay {nombre_graf} con venta en el periodo.")
                     else:
                         orden_cat = por_cat.iloc[::-1]
+                        cantidades = [
+                            " · ".join(p for p in (
+                                (formatear_entero(u) + " unid") if u and u > 0 else "",
+                                formatear_metros(m) if m and m > 0 else "",
+                            ) if p) or "—"
+                            for u, m in zip(orden_cat['UNIDADES'], orden_cat['M2'])
+                        ]
                         fig = go.Figure(go.Bar(
-                            x=orden_cat['VENTA'], y=[abreviar(c, 34) for c in orden_cat['CATEGORIA']],
+                            x=orden_cat['VENTA'], y=[abreviar(c, 34) for c in orden_cat[llave_graf]],
                             orientation="h", marker=dict(color=COBRE_500, cornerradius=5),
                             text=[formatear_moneda(v) for v in orden_cat['VENTA']], textposition="outside",
                             textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
-                            hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<extra></extra>",
+                            customdata=cantidades,
+                            hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<br>Cantidad: %{customdata}<extra></extra>",
                         ))
                         fig.update_xaxes(showgrid=True, gridcolor=DIVISOR, tickprefix="$ ")
                         fig.update_yaxes(showgrid=False)
                         mostrar_grafico(estilo_figura(fig, max(320, 26 * len(orden_cat) + 110), leyenda=False), "graf_art_cat")
 
-            # ---------- Vista 2: artículos dentro de una categoría ----------
+            # ---------- Vista 2: artículos dentro de un área y una categoría ----------
             with st.container(key="cc-card-art-detalle"):
                 titulo_tarjeta(
-                    "Artículos vendidos por categoría",
-                    "Elige una categoría para ver qué se vendió dentro de ella",
+                    "Artículos vendidos por área y categoría",
+                    "Elige un área y, si quieres, una categoría dentro de ella",
                 )
-                cats = resumen_articulos(base_art, llaves=('CATEGORIA',))
-                opciones = ["TODAS LAS CATEGORÍAS"] + [str(c) for c in cats['CATEGORIA']]
-                col_sel, col_bus = st.columns([1, 1], gap="medium")
+                if 'AREA' not in base_art.columns:
+                    base_art['AREA'] = SIN_AREA
+                TODAS_AREAS, TODAS_CATS = "TODAS LAS ÁREAS", "TODAS LAS CATEGORÍAS"
+                areas_venta = resumen_articulos(base_art, llaves=('AREA',))
+                opciones_area = [TODAS_AREAS] + [str(a) for a in areas_venta['AREA']]
+                col_area, col_sel, col_bus = st.columns([1, 1, 1], gap="medium")
+                with col_area:
+                    area_sel = st.selectbox("Área", opciones_area, key="art_area")
+                base_area = base_art if area_sel == TODAS_AREAS else \
+                    base_art[base_art['AREA'].astype(str) == area_sel]
+
+                cats = resumen_articulos(base_area, llaves=('CATEGORIA',))
+                opciones = [TODAS_CATS] + [str(c) for c in cats['CATEGORIA']]
+                # Si la categoría elegida antes no existe en el área nueva, vuelve a "todas".
+                if st.session_state.get("art_categoria") not in opciones:
+                    st.session_state["art_categoria"] = TODAS_CATS
                 with col_sel:
                     cat_sel = st.selectbox("Categoría", opciones, key="art_categoria")
                 with col_bus:
                     busqueda = st.text_input("Buscar artículo", key="art_busqueda",
                                              placeholder="Ej: angulo, vidrio, cerradura...")
 
-                detalle_base = base_art if cat_sel == "TODAS LAS CATEGORÍAS" else \
-                    base_art[base_art['CATEGORIA'].astype(str) == cat_sel]
+                detalle_base = base_area if cat_sel == TODAS_CATS else \
+                    base_area[base_area['CATEGORIA'].astype(str) == cat_sel]
 
-                llaves = ('ARTICULO', 'CATEGORIA') if cat_sel == "TODAS LAS CATEGORÍAS" else ('ARTICULO',)
+                llaves = ('ARTICULO', 'AREA', 'CATEGORIA') if cat_sel == TODAS_CATS else ('ARTICULO', 'AREA')
                 detalle = resumen_articulos(detalle_base, llaves=llaves)
                 detalle = detalle[detalle['VENTA'] != 0]
 
@@ -1956,7 +2015,7 @@ if vista == "Articulos":
                     detalle = detalle[detalle['ARTICULO'].astype(str).str.contains(patron, case=False, na=False, regex=False)]
 
                 if detalle.empty:
-                    estado_vacio("Ningún artículo coincide con la búsqueda en esta categoría.")
+                    estado_vacio("Ningún artículo coincide con la búsqueda en esta área o categoría.")
                 else:
                     resumen_linea = (
                         f"<b>{formatear_entero(len(detalle))}</b> artículos · "
@@ -1971,7 +2030,7 @@ if vista == "Articulos":
                     st.download_button(
                         label="Descargar artículos en Excel",
                         data=excel_articulos(detalle, mostrar_categoria=(cat_sel == "TODAS LAS CATEGORÍAS")),
-                        file_name=f"Articulos_{año_sel}_{cat_sel.replace(' ', '_')[:30]}.xlsx",
+                        file_name=f"Articulos_{año_sel}_{(cat_sel if cat_sel != TODAS_CATS else area_sel).replace(' ', '_')[:30]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch",
                         icon=":material/download:",
