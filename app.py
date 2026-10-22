@@ -614,12 +614,14 @@ def preparar_detalle_articulos(df):
             [1 / 3, 1 / 2], default=1.0), index=df.index)
         cantidad.loc[es_lamina] = (cantidad * area * fraccion)[es_lamina]
         es_m2 = es_m2 | es_lamina
-        # Ya en m², la lámina, la media y el tercio son el mismo vidrio: se quita la
-        # fracción del nombre para que queden en una sola fila.
+        # Ya en m², la lámina, la media y el tercio son el mismo vidrio, venga la lámina
+        # del tamaño que venga: se quita la fracción y la medida del nombre para que queden
+        # en una sola fila (y coincidan con el nombre del sistema anterior).
         df.loc[es_lamina, 'ARTICULO'] = (
             nombre[es_lamina]
             .str.replace(r'\s*\b(?:TERCIO|MEDIA)\b', '', regex=True)
             .str.replace(r'\s*\b1/[23]\b', '', regex=True)
+            .str.replace(r'\s*\b\d{2,4} \d{2,4}\b', '', regex=True)
             .str.split().str.join(' ')
         )
 
