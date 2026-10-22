@@ -788,6 +788,13 @@ def cargar_datos():
     return df, df_m2, errores
 
 ARCHIVO_AREAS = "AREAS_RETAIL_2026.xlsx"
+
+def normalizar_usuario(serie):
+    """'andrea.delgado', 'Andrea Delgado' y 'ANDREA  DELGADO' quedan como 'ANDREA DELGADO'."""
+    s = serie.fillna('').astype(str).map(normalizar_texto)
+    s = s.str.replace(r'[._\-]+', ' ', regex=True).str.split().str.join(' ')
+    return s.where(~s.isin(['', 'NAN', 'NONE']), 'SIN USUARIO')
+
 SIN_AREA = "SIN ÁREA"
 
 @st.cache_data(ttl=300)
@@ -896,6 +903,9 @@ if 'CATEGORIA' in df.columns:
     df['CATEGORIA'] = df['CATEGORIA'].apply(normalizar_texto)
     # Área comercial de cada categoría (AREAS_RETAIL_2026.xlsx).
     df['AREA'] = df['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
+if 'Usuario' in df.columns:
+    # El sistema anterior escribe "andrea.delgado" y el actual "Andrea Delgado": se unifican.
+    df['USUARIO'] = normalizar_usuario(df['Usuario'])
 if 'DEPARTAMENTO' in df.columns:
     df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
 
@@ -995,6 +1005,8 @@ df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 tabla_ant = pd.DataFrame(columns=['DEPARTAMENTO', 'CATEGORIA', 'META'])
 # Misma meta, repartida por sucursal y mes (solo para los gráficos)
 metas_suc_mes = pd.DataFrame(columns=['SUCURSAL', 'MES', 'META'])
+# Y por sucursal, mes y categoría (para repartir la meta de cada sucursal entre sus vendedores)
+metas_suc_mes_cat = pd.DataFrame(columns=['SUCURSAL', 'MES', 'DEPARTAMENTO', 'CATEGORIA', 'META'])
 
 if not df_meta_csv.empty and not df_pct_csv.empty:
     try:
@@ -1039,6 +1051,7 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         
         lista_metas = []
         lista_metas_mes = []
+        lista_metas_det = []
         for suc in sucursales_up:
             monto_suc = totales_meta_suc.get(suc, 0.0)
             if monto_suc > 0:
@@ -1054,8 +1067,15 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
                 df_mes_s['SUCURSAL'] = suc
                 lista_metas_mes.append(df_mes_s[['SUCURSAL', 'MES', 'META']])
 
+                det = df_mes_s[['SUCURSAL', 'MES', 'META_NUM']].merge(
+                    df_s[['DEPARTAMENTO', 'CATEGORIA', 'PCT_VAL_NORM']], how='cross')
+                det['META'] = det['META_NUM'] * det['PCT_VAL_NORM']
+                lista_metas_det.append(det[['SUCURSAL', 'MES', 'DEPARTAMENTO', 'CATEGORIA', 'META']])
+
         if lista_metas_mes:
             metas_suc_mes = pd.concat(lista_metas_mes, ignore_index=True)
+        if lista_metas_det:
+            metas_suc_mes_cat = pd.concat(lista_metas_det, ignore_index=True)
                 
         if lista_metas:
             df_concat_m = pd.concat(lista_metas, ignore_index=True)
@@ -1395,40 +1415,54 @@ def generar_excel_areas(tabla):
 # -----------------------------------
 # REPORTE DE VENDEDORES POR ÁREA (misma regla del dashboard de Miguel)
 # -----------------------------------
-def construir_tabla_vendedores(ventas, base_metas):
+# Un vendedor cuenta como vendedor de una sucursal en un mes si hizo al menos este
+# porcentaje de la venta de esa sucursal en ese mes (evita darle meta completa a quien
+# solo atendió una venta suelta en otra tienda).
+UMBRAL_VENDEDOR_ACTIVO = 0.05
+
+def construir_tabla_vendedores(ventas, metas_detalle):
     """
     Una fila por vendedor y área, un TOTAL VENDEDOR por vendedor y el TOTAL GENERAL.
-    La meta de cada categoría se reparte entre los vendedores según la parte de la venta
-    de esa categoría que hizo cada uno (si vendió el 30 %, le toca el 30 % de la meta).
+    La meta de cada sucursal en cada mes se reparte en partes iguales entre sus vendedores
+    de ese mes (los que hicieron al menos el 5 % de la venta de la sucursal en el mes).
+    Dentro de la sucursal, cada área conserva su peso en la meta.
     """
     columnas = ['USUARIO', 'ÁREA', 'VENTA', 'META', 'AVANCE']
-    if ventas is None or ventas.empty or 'Usuario' not in ventas.columns:
+    necesarias = {'USUARIO', 'SUCURSAL', 'MES', 'CATEGORIA', 'VENTA'}
+    if ventas is None or ventas.empty or not necesarias.issubset(ventas.columns):
         return pd.DataFrame(columns=columnas)
 
-    v = ventas[['Usuario', 'DEPARTAMENTO', 'CATEGORIA', 'VENTA']].copy()
-    v['USUARIO'] = v['Usuario'].fillna('SIN USUARIO').astype(str).str.strip().str.upper()
-    v.loc[v['USUARIO'].isin(['', 'NAN']), 'USUARIO'] = 'SIN USUARIO'
-    v['DEPARTAMENTO'] = v['DEPARTAMENTO'].astype(str)
-    v['CATEGORIA'] = v['CATEGORIA'].astype(str)
+    mapa = cargar_areas()
+    v = ventas[list(necesarias)].copy()
+    v['USUARIO'] = v['USUARIO'].astype(str)
+    v['SUCURSAL'] = v['SUCURSAL'].astype(str).str.upper().str.strip()
+    v['MES'] = v['MES'].astype(str).str.upper().str.strip()
     v['VENTA'] = pd.to_numeric(v['VENTA'], errors='coerce').fillna(0.0)
-    v['ÁREA'] = v['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
+    v['ÁREA'] = v['CATEGORIA'].astype(str).map(mapa).fillna(SIN_AREA)
 
-    por_cat = v.groupby(['USUARIO', 'ÁREA', 'DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
-    if base_metas is not None and not base_metas.empty and 'META' in base_metas.columns:
-        metas = base_metas[['DEPARTAMENTO', 'CATEGORIA', 'META']].copy()
-        metas['DEPARTAMENTO'] = metas['DEPARTAMENTO'].astype(str)
-        metas['CATEGORIA'] = metas['CATEGORIA'].astype(str)
-        metas = metas.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
-        por_cat = por_cat.merge(metas, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
+    venta_us = v.groupby(['USUARIO', 'ÁREA'], observed=True)['VENTA'].sum().reset_index()
+
+    # Vendedores de cada sucursal en cada mes
+    act = v.groupby(['SUCURSAL', 'MES', 'USUARIO'], observed=True)['VENTA'].sum().reset_index()
+    total_sm = act.groupby(['SUCURSAL', 'MES'], observed=True)['VENTA'].transform('sum')
+    act = act[(act['VENTA'] > 0) & (total_sm > 0) & (act['VENTA'] / total_sm >= UMBRAL_VENDEDOR_ACTIVO)]
+    act['N_VENDEDORES'] = act.groupby(['SUCURSAL', 'MES'], observed=True)['USUARIO'].transform('count')
+
+    if metas_detalle is not None and not metas_detalle.empty and not act.empty:
+        m = metas_detalle.copy()
+        m['SUCURSAL'] = m['SUCURSAL'].astype(str).str.upper().str.strip()
+        m['MES'] = m['MES'].astype(str).str.upper().str.strip()
+        m['ÁREA'] = m['CATEGORIA'].astype(str).map(mapa).fillna(SIN_AREA)
+        m = m.groupby(['SUCURSAL', 'MES', 'ÁREA'], observed=True)['META'].sum().reset_index()
+        reparto = act[['SUCURSAL', 'MES', 'USUARIO', 'N_VENDEDORES']].merge(m, on=['SUCURSAL', 'MES'], how='inner')
+        reparto['META'] = reparto['META'] / reparto['N_VENDEDORES']
+        meta_us = reparto.groupby(['USUARIO', 'ÁREA'], observed=True)['META'].sum().reset_index()
     else:
-        por_cat['META'] = 0.0
-    por_cat['META'] = pd.to_numeric(por_cat['META'], errors='coerce').fillna(0.0)
+        meta_us = pd.DataFrame(columns=['USUARIO', 'ÁREA', 'META'])
 
-    venta_cat = por_cat.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].transform('sum')
-    proporcion = np.where(venta_cat > 0, por_cat['VENTA'] / venta_cat, 0.0)
-    por_cat['META'] = por_cat['META'] * proporcion
-
-    t = por_cat.groupby(['USUARIO', 'ÁREA'], observed=True)[['VENTA', 'META']].sum().reset_index()
+    t = venta_us.merge(meta_us, on=['USUARIO', 'ÁREA'], how='outer')
+    t['VENTA'] = pd.to_numeric(t['VENTA'], errors='coerce').fillna(0.0)
+    t['META'] = pd.to_numeric(t['META'], errors='coerce').fillna(0.0)
     t = t[(t['VENTA'] != 0) | (t['META'] != 0)]
     if t.empty:
         return pd.DataFrame(columns=columnas)
@@ -2363,10 +2397,10 @@ if vista == "Areas":
                 )
 
             # ---------- Vista 3: reporte de vendedores por área ----------
-            tabla_vend = construir_tabla_vendedores(base_ar, tabla_base)
+            tabla_vend = construir_tabla_vendedores(base_ar, metas_suc_mes_cat)
             st.markdown(html_limpio(f"""
                 <div class="cc-section"><span class="cc-tri"></span><h3>Reporte de vendedores por área</h3></div>
-                <div class="cc-note">La meta de cada categoría se reparte entre los vendedores según la parte de la venta que hizo cada uno.</div>
+                <div class="cc-note">La meta de cada sucursal en cada mes se reparte en partes iguales entre sus vendedores de ese mes (los que hicieron al menos el 5 % de la venta de la sucursal en el mes). Los usuarios del sistema anterior y del actual de un mismo vendedor se unifican.</div>
                 <div class="cc-legend">
                     <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por vendedor</span>
                     <span><i style="background:{NAVY_800}"></i>Total general</span>
