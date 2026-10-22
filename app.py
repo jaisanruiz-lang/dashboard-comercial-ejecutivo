@@ -598,6 +598,23 @@ def preparar_detalle_articulos(df):
         cantidad.loc[resto] = 1.0
         estimada.loc[resto] = True
 
+    # Sistema actual: el vidrio y el espejo se venden por lámina completa, media (1/2) o
+    # tercio (1/3), así que la cantidad viene en piezas. Se pasa a m² con la medida de la
+    # lámina que trae el nombre (330×214, 366×214, 183×244...); si no la trae, se usa la
+    # lámina estándar de 3,30 x 2,14 m.
+    nombre = df['ARTICULO'].astype(str)
+    es_lamina = ((~es_anterior) & (~es_m2) & (~es_servicio) & cantidad.notna()
+                 & nombre.str.contains(r'^(?:VIDRIO|ESPEJO)\b.*\b\d+\s*MM\b', regex=True))
+    if es_lamina.any():
+        lados = nombre.str.extract(r'\b(\d{2,4}) (\d{2,4})\b').apply(pd.to_numeric, errors='coerce')
+        area = (lados[0] * lados[1] / 10000).fillna(3.30 * 2.14)
+        fraccion = pd.Series(np.select(
+            [nombre.str.contains(r'\bTERCIO\b|\b1/3\b', regex=True),
+             nombre.str.contains(r'\bMEDIA\b|\b1/2\b', regex=True)],
+            [1 / 3, 1 / 2], default=1.0), index=df.index)
+        cantidad.loc[es_lamina] = (cantidad * area * fraccion)[es_lamina]
+        es_m2 = es_m2 | es_lamina
+
     # Las devoluciones (venta negativa) traen la cantidad en positivo: se le pone el mismo
     # signo que la venta para que resten unidades, igual que restan dinero.
     cantidad = cantidad.abs().where(~venta.lt(0), -cantidad.abs())
