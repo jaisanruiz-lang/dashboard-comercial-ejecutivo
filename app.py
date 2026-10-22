@@ -1392,6 +1392,142 @@ def generar_excel_areas(tabla):
                 hoja[f'{letra}{fila}'].number_format = formato
     return output.getvalue()
 
+# -----------------------------------
+# REPORTE DE VENDEDORES POR ÁREA (misma regla del dashboard de Miguel)
+# -----------------------------------
+def construir_tabla_vendedores(ventas, base_metas):
+    """
+    Una fila por vendedor y área, un TOTAL VENDEDOR por vendedor y el TOTAL GENERAL.
+    La meta de cada categoría se reparte entre los vendedores según la parte de la venta
+    de esa categoría que hizo cada uno (si vendió el 30 %, le toca el 30 % de la meta).
+    """
+    columnas = ['USUARIO', 'ÁREA', 'VENTA', 'META', 'AVANCE']
+    if ventas is None or ventas.empty or 'Usuario' not in ventas.columns:
+        return pd.DataFrame(columns=columnas)
+
+    v = ventas[['Usuario', 'DEPARTAMENTO', 'CATEGORIA', 'VENTA']].copy()
+    v['USUARIO'] = v['Usuario'].fillna('SIN USUARIO').astype(str).str.strip().str.upper()
+    v.loc[v['USUARIO'].isin(['', 'NAN']), 'USUARIO'] = 'SIN USUARIO'
+    v['DEPARTAMENTO'] = v['DEPARTAMENTO'].astype(str)
+    v['CATEGORIA'] = v['CATEGORIA'].astype(str)
+    v['VENTA'] = pd.to_numeric(v['VENTA'], errors='coerce').fillna(0.0)
+    v['ÁREA'] = v['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
+
+    por_cat = v.groupby(['USUARIO', 'ÁREA', 'DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
+    if base_metas is not None and not base_metas.empty and 'META' in base_metas.columns:
+        metas = base_metas[['DEPARTAMENTO', 'CATEGORIA', 'META']].copy()
+        metas['DEPARTAMENTO'] = metas['DEPARTAMENTO'].astype(str)
+        metas['CATEGORIA'] = metas['CATEGORIA'].astype(str)
+        metas = metas.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['META'].sum().reset_index()
+        por_cat = por_cat.merge(metas, on=['DEPARTAMENTO', 'CATEGORIA'], how='left')
+    else:
+        por_cat['META'] = 0.0
+    por_cat['META'] = pd.to_numeric(por_cat['META'], errors='coerce').fillna(0.0)
+
+    venta_cat = por_cat.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].transform('sum')
+    proporcion = np.where(venta_cat > 0, por_cat['VENTA'] / venta_cat, 0.0)
+    por_cat['META'] = por_cat['META'] * proporcion
+
+    t = por_cat.groupby(['USUARIO', 'ÁREA'], observed=True)[['VENTA', 'META']].sum().reset_index()
+    t = t[(t['VENTA'] != 0) | (t['META'] != 0)]
+    if t.empty:
+        return pd.DataFrame(columns=columnas)
+    t['ORDEN_REGISTRO'] = 0
+
+    sub = t.groupby('USUARIO', observed=True)[['VENTA', 'META']].sum().reset_index()
+    sub['ÁREA'] = 'TOTAL VENDEDOR'
+    sub['ORDEN_REGISTRO'] = 1
+
+    total = pd.DataFrame([{'USUARIO': 'TOTAL GENERAL', 'ÁREA': 'REPORTE CONSOLIDADO',
+                           'VENTA': t['VENTA'].sum(), 'META': t['META'].sum(), 'ORDEN_REGISTRO': 2}])
+
+    final = pd.concat([t, sub, total], ignore_index=True)
+    final['AVANCE'] = np.where(final['META'] > 0, final['VENTA'] / final['META'] * 100, 0.0)
+    # Vendedores de mayor a menor venta; dentro de cada uno, sus áreas de mayor a menor venta.
+    orden_us = sub.sort_values('VENTA', ascending=False)['USUARIO'].tolist() + ['TOTAL GENERAL']
+    final['_ORDEN_US'] = final['USUARIO'].map({u: i for i, u in enumerate(orden_us)})
+    final = final.sort_values(['_ORDEN_US', 'ORDEN_REGISTRO', 'VENTA'], ascending=[True, True, False])
+    return final[columnas].reset_index(drop=True)
+
+def estilizar_tabla_vendedores(tabla):
+    vista_t = tabla.copy()
+    vista_t['VENTA'] = vista_t['VENTA'].apply(formatear_moneda)
+    vista_t['META'] = vista_t['META'].apply(formatear_moneda)
+    vista_t['AVANCE'] = vista_t['AVANCE'].apply(formatear_porcentaje)
+    vista_t = vista_t.rename(columns={'USUARIO': 'VENDEDOR'})
+
+    def colores(row):
+        if row['VENDEDOR'] == 'TOTAL GENERAL':
+            return [f'font-weight: bold; background-color: {NAVY_800}; color: #FFFFFF;'] * len(row)
+        if row['ÁREA'] == 'TOTAL VENDEDOR':
+            estilos = [f'font-weight: bold; background-color: {COBRE_100}; color: {COBRE_700};'] * len(row)
+        else:
+            estilos = [f'background-color: #FFFFFF; color: {TEXTO};'] * len(row)
+        meta_fila, avance_fila = tabla.loc[row.name, 'META'], tabla.loc[row.name, 'AVANCE']
+        if pd.notna(meta_fila) and meta_fila > 0:
+            _, color_av, _ = nivel_avance(avance_fila, meta_fila)
+            pos = list(row.index).index('AVANCE')
+            estilos[pos] = estilos[pos] + f' color: {color_av}; font-weight: bold;'
+        return estilos
+
+    return (vista_t.style.apply(colores, axis=1)
+            .set_properties(**{'text-align': 'right', 'font-family': 'Manrope, sans-serif'}))
+
+def generar_excel_vendedores(tabla):
+    """Excel sumable: sin filas de TOTAL VENDEDOR y con números como números."""
+    output = io.BytesIO()
+    df_excel = tabla[tabla['ÁREA'] != 'TOTAL VENDEDOR'].copy()
+    df_excel['AVANCE'] = df_excel['AVANCE'] / 100.0
+    df_excel = df_excel.rename(columns={'USUARIO': 'VENDEDOR'})
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_excel.to_excel(writer, index=False, sheet_name='Vendedores')
+        hoja = writer.sheets['Vendedores']
+        for letra, ancho in zip('ABCDE', (30, 34, 16, 16, 11)):
+            hoja.column_dimensions[letra].width = ancho
+        for fila in range(2, len(df_excel) + 2):
+            hoja[f'C{fila}'].number_format = '#,##0.00'
+            hoja[f'D{fila}'].number_format = '#,##0.00'
+            hoja[f'E{fila}'].number_format = '0.00%'
+    return output.getvalue()
+
+def generar_pdf_vendedores(tabla, año):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleVend', parent=styles['Heading1'], fontSize=16, leading=20, textColor=colors.HexColor(NAVY_800), spaceAfter=8)
+    header_style = ParagraphStyle('HeadVend', parent=styles['Normal'], fontSize=8, leading=11, fontName='Helvetica-Bold', textColor=colors.white, alignment=1)
+    celda = ParagraphStyle('CeldaVend', parent=styles['Normal'], fontSize=8, leading=10, alignment=2)
+    celda_total = ParagraphStyle('CeldaVendTot', parent=celda, fontName='Helvetica-Bold', textColor=colors.HexColor(COBRE_700))
+    celda_general = ParagraphStyle('CeldaVendGen', parent=celda_total, textColor=colors.white)
+
+    story = [Paragraph(f"<b>REPORTE DE VENDEDORES POR ÁREA - AÑO {año}</b>", title_style), Spacer(1, 8)]
+    datos = [[Paragraph(f"<b>{h}</b>", header_style) for h in ("VENDEDOR", "ÁREA", "VENTA", "META", "AVANCE")]]
+    estilos = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(NAVY_800)),
+        ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor(COBRE_500)),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor(BORDE)),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]
+    for i, fila in enumerate(tabla.itertuples(index=False), start=1):
+        es_general = fila.USUARIO == 'TOTAL GENERAL'
+        es_sub = fila[1] == 'TOTAL VENDEDOR'
+        estilo = celda_general if es_general else (celda_total if es_sub else celda)
+        datos.append([Paragraph(str(fila.USUARIO), estilo), Paragraph(str(fila[1]), estilo),
+                      Paragraph(formatear_moneda(fila.VENTA), estilo), Paragraph(formatear_moneda(fila.META), estilo),
+                      Paragraph(formatear_porcentaje(fila.AVANCE), estilo)])
+        if es_general:
+            estilos.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor(NAVY_800)))
+        elif es_sub:
+            estilos.append(('BACKGROUND', (0, i), (-1, i), colors.HexColor(COBRE_100)))
+    tabla_pdf = Table(datos, colWidths=[170, 190, 100, 100, 70], repeatRows=1)
+    tabla_pdf.setStyle(TableStyle(estilos))
+    story.append(tabla_pdf)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def generar_pdf_descarga(dataframe, año, ventas, meta, avance, eficiencia):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -2226,7 +2362,51 @@ if vista == "Areas":
                     key="descarga_reporte_areas",
                 )
 
-            # ---------- Vista 3: artículos de un área ----------
+            # ---------- Vista 3: reporte de vendedores por área ----------
+            tabla_vend = construir_tabla_vendedores(base_ar, tabla_base)
+            st.markdown(html_limpio(f"""
+                <div class="cc-section"><span class="cc-tri"></span><h3>Reporte de vendedores por área</h3></div>
+                <div class="cc-note">La meta de cada categoría se reparte entre los vendedores según la parte de la venta que hizo cada uno.</div>
+                <div class="cc-legend">
+                    <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por vendedor</span>
+                    <span><i style="background:{NAVY_800}"></i>Total general</span>
+                    <span><b style="color:{EXITO}">Avance</b>&nbsp;meta cumplida</span>
+                    <span><b style="color:{ALERTA}">Avance</b>&nbsp;90 – 99 %</span>
+                    <span><b style="color:{PELIGRO}">Avance</b>&nbsp;menos de 90 %</span>
+                </div>
+            """), unsafe_allow_html=True)
+            if tabla_vend.empty:
+                estado_vacio("No hay ventas por vendedor para los filtros seleccionados.")
+            else:
+                TODOS_VEND = "TODOS LOS VENDEDORES"
+                vendedores = [u for u in tabla_vend['USUARIO'].unique() if u != 'TOTAL GENERAL']
+                vend_sel = st.selectbox("Vendedor", [TODOS_VEND] + vendedores, key="area_vendedor")
+                if vend_sel == TODOS_VEND:
+                    tabla_vend_vista = tabla_vend
+                else:
+                    tabla_vend_vista = tabla_vend[tabla_vend['USUARIO'] == vend_sel].reset_index(drop=True)
+                st.dataframe(estilizar_tabla_vendedores(tabla_vend_vista), width="stretch",
+                             height=min(530, 36 * (len(tabla_vend_vista) + 1) + 4), hide_index=True)
+                bot_v1, bot_v2 = st.columns(2)
+                sufijo = "" if vend_sel == TODOS_VEND else "_" + re.sub(r'[^A-Za-z0-9]+', '_', vend_sel)[:30]
+                bot_v1.download_button(
+                    label="Descargar reporte de vendedores en Excel (Sumable)",
+                    data=generar_excel_vendedores(tabla_vend_vista),
+                    file_name=f"Reporte_Vendedores_{año_sel}{sufijo}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/table_view:", type="primary", width="stretch",
+                    key="descarga_vendedores_excel",
+                )
+                bot_v2.download_button(
+                    label="Descargar reporte de vendedores en PDF",
+                    data=generar_pdf_vendedores(tabla_vend_vista, año_sel),
+                    file_name=f"Reporte_Vendedores_{año_sel}{sufijo}.pdf",
+                    mime="application/pdf",
+                    icon=":material/picture_as_pdf:", width="stretch",
+                    key="descarga_vendedores_pdf",
+                )
+
+            # ---------- Vista 4: artículos de un área ----------
             with st.container(key="cc-card-area-detalle"):
                 titulo_tarjeta(
                     "Artículos vendidos por área",
