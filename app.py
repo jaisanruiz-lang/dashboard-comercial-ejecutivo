@@ -559,9 +559,30 @@ def preparar_detalle_articulos(df):
     es_m2 = unidad.eq('M2')
     cantidad = pd.Series(np.where(es_m2, metraje, metraje / factor), index=df.index)
 
+    # Vidrio cortado a la medida ("VIDRIO POR M2 (TIENDA)"): TMetraje trae las PIEZAS y la
+    # medida viene en la descripción, así que los m² son ancho x alto (cm) x piezas.
+    desc_txt = desc.astype(str).str.upper()
+    medidas = desc_txt.str.extract(r'ANCHO:\s*([\d\.,]+)\s*X\s*ALTO:\s*([\d\.,]+)')
+    ancho = medidas[0].apply(limpiar_numero_nulo)
+    alto = medidas[1].apply(limpiar_numero_nulo)
+    es_corte = (desc_txt.str.contains('POR M2', regex=False)
+                & ancho.gt(0) & alto.gt(0) & metraje.gt(0))
+    if es_corte.any():
+        cantidad.loc[es_corte] = (ancho * alto / 10000 * metraje)[es_corte]
+        es_m2 = es_m2 | es_corte
+
+    # Los servicios (corte, canto pulido, flete...) no son piezas: se dejan sin unidades
+    # para que no inflen "Unidades vendidas". Su venta sí se sigue sumando.
+    if 'DescrLineaNegocio' in df.columns:
+        es_servicio = df['DescrLineaNegocio'].apply(normalizar_texto).str.startswith('SERVICIO')
+    else:
+        es_servicio = pd.Series(False, index=df.index)
+    es_servicio = es_servicio & ~es_m2
+    cantidad.loc[es_servicio] = np.nan
+
     # Lo que no trae cantidad (sobre todo cotizaciones) se deduce del precio unitario.
     estimada = pd.Series(False, index=df.index)
-    falta = cantidad.isna() & venta.gt(0)
+    falta = cantidad.isna() & venta.gt(0) & ~es_servicio
     if falta.any() and not por_nombre.empty:
         precio = pd.to_numeric(df.loc[falta, 'ARTICULO'].map(por_nombre['PRECIO_REF']), errors='coerce')
         deducida = (venta[falta] / precio).round()
@@ -572,13 +593,17 @@ def preparar_detalle_articulos(df):
     # Si aun así no hay con qué deducirla, se cuenta el renglón como una unidad:
     # toda venta movió al menos una pieza, y una unidad es el valor más frecuente
     # (el 55 % de los renglones con cantidad conocida son exactamente uno).
-    resto = cantidad.isna() & venta.ne(0) & (~es_m2)
+    resto = cantidad.isna() & venta.ne(0) & (~es_m2) & (~es_servicio)
     if resto.any():
         cantidad.loc[resto] = 1.0
         estimada.loc[resto] = True
 
+    # Las devoluciones (venta negativa) traen la cantidad en positivo: se le pone el mismo
+    # signo que la venta para que resten unidades, igual que restan dinero.
+    cantidad = cantidad.abs().where(~venta.lt(0), -cantidad.abs())
+
     df['UNIDADES'] = cantidad.where(es_m2, cantidad.round())
-    df['UNIDAD_MEDIDA'] = np.where(es_m2, 'm²', 'unid')
+    df['UNIDAD_MEDIDA'] = np.select([es_servicio, es_m2], ['servicio', 'm²'], default='unid')
     df['CANT_ESTIMADA'] = estimada
     return df
 
@@ -1786,7 +1811,7 @@ if vista == "Articulos":
                       'M² VENDIDOS': 14, 'VENTA': 16, '% DEL TOTAL': 13, 'PEDIDOS': 11}
             for col, letra in letras.items():
                 hoja.column_dimensions[letra].width = anchos.get(col, 14)
-                formato = {'UNIDADES': '#,##0', 'PEDIDOS': '#,##0', '% DEL TOTAL': '0,00%'}.get(col, '#,##0.00')
+                formato = {'UNIDADES': '#,##0', 'PEDIDOS': '#,##0', '% DEL TOTAL': '0.00%'}.get(col, '#,##0.00')
                 if col in ('ARTÍCULO', 'CATEGORÍA'):
                     continue
                 for fila in range(2, len(export) + 2):
@@ -1808,8 +1833,6 @@ if vista == "Articulos":
             venta_art = resumen_total['VENTA'].sum()
             total_unidades = resumen_total['UNIDADES'].sum()
             total_m2 = resumen_total['M2'].sum()
-            renglones_sin = int(resumen_total['SIN_UNIDAD'].sum())
-            venta_sin = float(base_art.loc[base_art['UNIDADES'].isna(), 'VENTA'].sum())
             lider = resumen_total.iloc[0]
 
             # ---------- KPIs ----------
@@ -1817,7 +1840,7 @@ if vista == "Articulos":
                 kpi_card(0, "ARTÍCULOS DISTINTOS", formatear_entero(len(resumen_total)), "inventario",
                          f"En {rango_meses(meses_sel)} de {año_sel}"),
                 kpi_card(1, "UNIDADES VENDIDAS", formatear_entero(total_unidades), "ventas",
-                         "Piezas, perfiles y kits"),
+                         "Piezas, perfiles y kits (sin servicios)"),
                 kpi_card(2, "M² VENDIDOS", formatear_metros(total_m2), "m2",
                          "Vidrio, espejos y láminas"),
                 kpi_card(3, "ARTÍCULO LÍDER", abreviar(lider['ARTICULO'], 30), "avance",
