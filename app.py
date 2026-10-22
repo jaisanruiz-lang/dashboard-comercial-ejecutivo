@@ -4,6 +4,7 @@ import numpy as np
 import os
 import io
 import gdown
+import re
 import unicodedata
 import plotly.graph_objects as go
 from reportlab.lib.pagesizes import letter, landscape
@@ -163,15 +164,34 @@ st.markdown("""
     .cc-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .cc-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 
-    /* ---------- Pestañas ---------- */
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--border); }
-    .stTabs [data-baseweb="tab"] {
-        height: 44px; padding: 0 14px; border-radius: 8px 8px 0 0; font-weight: 700; color: var(--text-muted);
-        transition: background .15s var(--ease), color .15s var(--ease);
+    /* ---------- Pestañas (navegación principal) ---------- */
+    div[class*="st-key-cc-nav"] { margin: 2px 0 14px 0; border-bottom: 2px solid var(--border); padding-bottom: 10px; }
+    div[class*="st-key-cc-nav"] div[data-testid="stElementToolbar"] { display: none; }
+    div[class*="st-key-cc-nav"] [role="radiogroup"],
+    div[class*="st-key-cc-nav"] [data-baseweb="button-group"] { gap: 8px !important; flex-wrap: wrap; }
+    div[class*="st-key-cc-nav"] button {
+        height: 46px !important; padding: 0 20px !important; border-radius: 10px !important;
+        font-weight: 700 !important; font-size: 14.5px !important;
+        color: var(--text-muted) !important; background: transparent !important;
+        border: 1px solid transparent !important;
+        transition: background .15s var(--ease), color .15s var(--ease), box-shadow .15s var(--ease);
     }
-    .stTabs [data-baseweb="tab"]:hover { background: var(--copper-100); color: var(--copper-700); }
-    .stTabs [aria-selected="true"] { color: var(--navy-800) !important; }
-    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--copper-600) !important; height: 3px; }
+    div[class*="st-key-cc-nav"] button:hover {
+        background: var(--copper-100) !important; color: var(--copper-700) !important;
+    }
+    /* La pestaña activa: fondo azul marino, texto blanco y barra de cobre debajo */
+    div[class*="st-key-cc-nav"] button[aria-checked="true"],
+    div[class*="st-key-cc-nav"] button[aria-pressed="true"],
+    div[class*="st-key-cc-nav"] button[kind="segmented_controlActive"] {
+        background: var(--navy-800) !important; color: #FFFFFF !important;
+        border-color: var(--navy-800) !important;
+        box-shadow: 0 4px 10px rgba(7, 44, 71, .22), inset 0 -3px 0 0 var(--copper-500) !important;
+    }
+    div[class*="st-key-cc-nav"] button[aria-checked="true"]:hover,
+    div[class*="st-key-cc-nav"] button[aria-pressed="true"]:hover,
+    div[class*="st-key-cc-nav"] button[kind="segmented_controlActive"]:hover {
+        background: var(--navy-700) !important; color: #FFFFFF !important;
+    }
 
     /* ---------- Botones ---------- */
     div[data-testid="stDownloadButton"] button, div[data-testid="stButton"] button {
@@ -423,6 +443,13 @@ def estado_vacio(mensaje):
 # -----------------------------------
 ARCHIVO_REFERENCIA_ARTICULOS = "ARTICULOS_REFERENCIA.csv"
 
+def _ordenar_medidas(texto):
+    """Deja las medidas en un orden fijo: '214 330' y '330 214' son la misma lámina."""
+    def cambia(m):
+        a, b = int(m.group(1)), int(m.group(2))
+        return f"{min(a, b)} {max(a, b)}"
+    return re.sub(r'\b(\d{2,4}) (\d{2,4})\b', cambia, texto)
+
 def normalizar_nombre_articulo(serie):
     """Deja el nombre del artículo limpio y comparable entre el sistema anterior y el actual."""
     s = serie.astype(str).fillna('').str.upper()
@@ -430,7 +457,8 @@ def normalizar_nombre_articulo(serie):
     s = s.str.replace(r'(MEDIDA|ANCHO|ACABADO)\s*:.*$', '', regex=True)
     s = s.str.replace(r'[^A-Z0-9ÑÁÉÍÓÚ"\'/\.\(\)\- ]', ' ', regex=True)
     s = s.str.split().str.join(' ')
-    return s.fillna('').astype('object').where(s.notna(), '')
+    s = s.fillna('').astype('object').where(s.notna(), '')
+    return s.map(lambda t: _ordenar_medidas(t) if isinstance(t, str) else '')
 
 @st.cache_data(ttl=300)
 def cargar_referencia_articulos():
@@ -540,6 +568,14 @@ def preparar_detalle_articulos(df):
         deducida = deducida.where(deducida >= 1)
         cantidad.loc[falta] = deducida
         estimada.loc[falta] = deducida.notna()
+
+    # Si aun así no hay con qué deducirla, se cuenta el renglón como una unidad:
+    # toda venta movió al menos una pieza, y una unidad es el valor más frecuente
+    # (el 55 % de los renglones con cantidad conocida son exactamente uno).
+    resto = cantidad.isna() & venta.ne(0) & (~es_m2)
+    if resto.any():
+        cantidad.loc[resto] = 1.0
+        estimada.loc[resto] = True
 
     df['UNIDADES'] = cantidad.where(es_m2, cantidad.round())
     df['UNIDAD_MEDIDA'] = np.where(es_m2, 'm²', 'unid')
@@ -1339,18 +1375,29 @@ render_kpis([
 # -----------------------------------
 # PESTAÑAS DEL REPORTE
 # -----------------------------------
-tab_resumen, tab_sucursales, tab_departamentos, tab_detalle, tab_articulos = st.tabs([
-    ":material/insights: Resumen",
-    ":material/storefront: Sucursales",
-    ":material/category: Departamentos",
-    ":material/table_chart: Detalle y descargas",
-    ":material/inventory_2: Artículos",
-])
+# La vista se guarda en la sesión, así que cambiar un filtro de la barra lateral
+# devuelve a la misma pestaña en la que estabas.
+VISTAS = {
+    "Resumen": ":material/insights: Resumen",
+    "Sucursales": ":material/storefront: Sucursales",
+    "Departamentos": ":material/category: Departamentos",
+    "Detalle": ":material/table_chart: Detalle y descargas",
+    "Articulos": ":material/inventory_2: Artículos",
+}
+
+with st.container(key="cc-nav"):
+    vista = st.segmented_control(
+        "Vista", options=list(VISTAS.keys()), format_func=lambda v: VISTAS[v],
+        default="Resumen", key="cc_vista", label_visibility="collapsed",
+    )
+if vista is None:
+    vista = st.session_state.get("cc_vista_previa", "Resumen")
+st.session_state["cc_vista_previa"] = vista
 
 PALETA = [NAVY_800, COBRE_500, NAVY_400, ARENA, "#2A8C82", PIZARRA, NAVY_700, COBRE_400]
 
 # ===== RESUMEN =====
-with tab_resumen:
+if vista == "Resumen":
     col_a, col_b = st.columns([2, 1], gap="medium")
 
     with col_a:
@@ -1468,7 +1515,7 @@ with tab_resumen:
                 estado_vacio("No hay ventas registradas para los filtros seleccionados.")
 
 # ===== SUCURSALES =====
-with tab_sucursales:
+if vista == "Sucursales":
     # Solo las sucursales que vendieron en el periodo; las demás aparecen cuando tengan ventas
     sucursales_con_venta = [s for s in sucursales_en_orden if ventas_suc.get(s, 0.0) > 0]
 
@@ -1547,7 +1594,7 @@ with tab_sucursales:
             estado_vacio("No hay metas mensuales cargadas para las sucursales seleccionadas.")
 
 # ===== DEPARTAMENTOS =====
-with tab_departamentos:
+if vista == "Departamentos":
     col_e, col_f = st.columns([1, 1], gap="medium")
 
     with col_e:
@@ -1606,7 +1653,7 @@ with tab_departamentos:
                 estado_vacio("No hay ventas registradas para los departamentos seleccionados.")
 
 # ===== DETALLE Y DESCARGAS =====
-with tab_detalle:
+if vista == "Detalle":
     st.markdown(html_limpio(f"""
         <div class="cc-legend">
             <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por departamento</span>
@@ -1656,7 +1703,7 @@ with tab_detalle:
 
 
 # ===== ARTÍCULOS =====
-with tab_articulos:
+if vista == "Articulos":
     COLS_ART = {'ARTICULO', 'UNIDADES', 'UNIDAD_MEDIDA', 'CATEGORIA'}
 
     def abreviar(texto, largo=46):
@@ -1706,14 +1753,7 @@ with tab_articulos:
         if mostrar_categoria and 'CATEGORIA' in tabla.columns:
             salida['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
         unidades = tabla['UNIDADES'].where(tabla['UNIDADES'] > 0)
-        # El asterisco solo cuando una parte apreciable de la cantidad se dedujo del precio;
-        # marcar un renglón suelto entre cientos no aportaría nada.
-        renglones = tabla['RENGLONES'].replace(0, np.nan)
-        peso_estimado = (tabla['ESTIMADAS'] / renglones).fillna(0.0)
-        salida['UNIDADES'] = [
-            formatear_entero(u) + ("*" if p >= 0.10 else "")
-            for u, p in zip(unidades, peso_estimado)
-        ]
+        salida['UNIDADES'] = [formatear_entero(u) for u in unidades]
         if (tabla['M2'].fillna(0) > 0).any():
             salida['M² VENDIDOS'] = tabla['M2'].apply(formatear_metros)
         salida['VENTA'] = tabla['VENTA'].apply(formatear_moneda)
@@ -1723,20 +1763,34 @@ with tab_articulos:
         salida['PEDIDOS'] = tabla['PEDIDOS'].apply(formatear_entero)
         return salida
 
-    def excel_articulos(tabla):
+    def excel_articulos(tabla, mostrar_categoria=False):
+        """Mismas columnas que la pantalla, pero con los números como números."""
         salida = io.BytesIO()
-        export = tabla.rename(columns={
-            'ARTICULO': 'ARTICULO', 'CATEGORIA': 'CATEGORIA', 'VENTA': 'VENTA',
-            'UNIDADES': 'UNIDADES', 'M2': 'M2 VENDIDOS', 'PEDIDOS': 'PEDIDOS',
-            'SIN_UNIDAD': 'RENGLONES SIN UNIDAD', 'ESTIMADAS': 'RENGLONES ESTIMADOS',
-            'RENGLONES': 'RENGLONES TOTALES',
-        })
+        total = tabla['VENTA'].sum()
+        export = pd.DataFrame()
+        export['ARTÍCULO'] = tabla['ARTICULO'].astype(str).str.title()
+        if mostrar_categoria and 'CATEGORIA' in tabla.columns:
+            export['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
+        export['UNIDADES'] = tabla['UNIDADES'].fillna(0).round(0).astype(int)
+        if (tabla['M2'].fillna(0) > 0).any():
+            export['M² VENDIDOS'] = tabla['M2'].fillna(0).round(2)
+        export['VENTA'] = tabla['VENTA'].round(2)
+        export['% DEL TOTAL'] = (tabla['VENTA'] / total if total else 0.0).round(6)
+        export['PEDIDOS'] = tabla['PEDIDOS'].fillna(0).astype(int)
+
         with pd.ExcelWriter(salida, engine='openpyxl') as writer:
             export.to_excel(writer, index=False, sheet_name='Articulos')
             hoja = writer.sheets['Articulos']
-            for fila in range(2, len(export) + 2):
-                for letra in ('C', 'D', 'E'):
-                    hoja[f'{letra}{fila}'].number_format = '#,##0.00'
+            letras = {c: chr(ord('A') + i) for i, c in enumerate(export.columns)}
+            anchos = {'ARTÍCULO': 52, 'CATEGORÍA': 30, 'UNIDADES': 12,
+                      'M² VENDIDOS': 14, 'VENTA': 16, '% DEL TOTAL': 13, 'PEDIDOS': 11}
+            for col, letra in letras.items():
+                hoja.column_dimensions[letra].width = anchos.get(col, 14)
+                formato = {'UNIDADES': '#,##0', 'PEDIDOS': '#,##0', '% DEL TOTAL': '0,00%'}.get(col, '#,##0.00')
+                if col in ('ARTÍCULO', 'CATEGORÍA'):
+                    continue
+                for fila in range(2, len(export) + 2):
+                    hoja[f'{letra}{fila}'].number_format = formato
         return salida.getvalue()
 
     if not COLS_ART.issubset(df_filtrado.columns) or df_filtrado.empty:
@@ -1863,22 +1917,9 @@ with tab_articulos:
                         width="stretch", height=460, hide_index=True,
                     )
 
-                    notas = []
-                    if int(detalle['ESTIMADAS'].sum()) > 0:
-                        notas.append("Las cantidades con * traen una parte deducida del precio unitario del artículo, porque el sistema no registró la cantidad en esos renglones.")
-                    if renglones_sin > 0:
-                        notas.append(
-                            f"Quedan {formatear_entero(renglones_sin)} renglones sin cantidad "
-                            f"({formatear_moneda(venta_sin)}): son productos a medida y kits valorados, "
-                            "que no tienen un precio unitario fijo con el cual deducirla."
-                        )
-                    notas.append("El vidrio, los espejos y las láminas se cuentan en m², que es como se venden. El resto va en piezas: un perfil de 6,10 m cuenta como una unidad.")
-                    for nota in notas:
-                        estado_vacio(nota)
-
                     st.download_button(
                         label="Descargar artículos en Excel",
-                        data=excel_articulos(detalle),
+                        data=excel_articulos(detalle, mostrar_categoria=(cat_sel == "TODAS LAS CATEGORÍAS")),
                         file_name=f"Articulos_{año_sel}_{cat_sel.replace(' ', '_')[:30]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch",
