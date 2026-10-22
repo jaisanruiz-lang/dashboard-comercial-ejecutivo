@@ -614,6 +614,14 @@ def preparar_detalle_articulos(df):
             [1 / 3, 1 / 2], default=1.0), index=df.index)
         cantidad.loc[es_lamina] = (cantidad * area * fraccion)[es_lamina]
         es_m2 = es_m2 | es_lamina
+        # Ya en m², la lámina, la media y el tercio son el mismo vidrio: se quita la
+        # fracción del nombre para que queden en una sola fila.
+        df.loc[es_lamina, 'ARTICULO'] = (
+            nombre[es_lamina]
+            .str.replace(r'\s*\b(?:TERCIO|MEDIA)\b', '', regex=True)
+            .str.replace(r'\s*\b1/[23]\b', '', regex=True)
+            .str.split().str.join(' ')
+        )
 
     # Las devoluciones (venta negativa) traen la cantidad en positivo: se le pone el mismo
     # signo que la venta para que resten unidades, igual que restan dinero.
@@ -1813,7 +1821,8 @@ if vista == "Articulos":
         export['ARTÍCULO'] = tabla['ARTICULO'].astype(str).str.title()
         if mostrar_categoria and 'CATEGORIA' in tabla.columns:
             export['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
-        export['UNIDADES'] = tabla['UNIDADES'].fillna(0).round(0).astype(int)
+        # Lo que se vende por m² deja la celda de unidades vacía en vez de poner 0.
+        export['UNIDADES'] = tabla['UNIDADES'].where(tabla['UNIDADES'].fillna(0) != 0).round(0).astype('Int64')
         if (tabla['M2'].fillna(0) > 0).any():
             export['M² VENDIDOS'] = tabla['M2'].fillna(0).round(2)
         export['VENTA'] = tabla['VENTA'].round(2)
