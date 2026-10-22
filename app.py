@@ -297,6 +297,12 @@ def limpiar_numero(valor):
     except:
         return 0.0
 
+def limpiar_numero_nulo(valor):
+    """Como limpiar_numero, pero deja vacío lo que no trae dato (en vez de convertirlo en 0)."""
+    if pd.isna(valor) or str(valor).strip() in ('', '-'):
+        return np.nan
+    return limpiar_numero(valor)
+
 def formatear_moneda(valor):
     if pd.isna(valor):
         return "$ 0,00"
@@ -410,6 +416,135 @@ def mostrar_grafico(fig, clave):
 
 def estado_vacio(mensaje):
     st.markdown(html_limpio(f'<div class="cc-note">{mensaje}</div>'), unsafe_allow_html=True)
+
+
+# -----------------------------------
+# DETALLE POR ARTÍCULO (NOMBRE UNIFICADO Y UNIDADES VENDIDAS)
+# -----------------------------------
+ARCHIVO_REFERENCIA_ARTICULOS = "ARTICULOS_REFERENCIA.csv"
+
+def normalizar_nombre_articulo(serie):
+    """Deja el nombre del artículo limpio y comparable entre el sistema anterior y el actual."""
+    s = serie.astype(str).fillna('').str.upper()
+    s = s.str.replace(r'[\r\n]+', ' ', regex=True)
+    s = s.str.replace(r'(MEDIDA|ANCHO|ACABADO)\s*:.*$', '', regex=True)
+    s = s.str.replace(r'[^A-Z0-9ÑÁÉÍÓÚ"\'/\.\(\)\- ]', ' ', regex=True)
+    s = s.str.split().str.join(' ')
+    return s.fillna('').astype('object').where(s.notna(), '')
+
+@st.cache_data(ttl=300)
+def cargar_referencia_articulos():
+    """
+    Tabla de apoyo para contar unidades vendidas:
+      - por CODIGO: unidad de medida y metros por unidad (un perfil de 6,10 m es 1 unidad).
+      - por NOMBRE: precio unitario de referencia, para deducir la cantidad cuando el
+        sistema no la trae (pasa sobre todo con las cotizaciones).
+    Si el archivo no está, el dashboard sigue funcionando sin conversión.
+    """
+    vacio = pd.DataFrame(columns=['UNIDAD', 'METROS_POR_UNIDAD', 'PRECIO_REF'])
+    if not os.path.exists(ARCHIVO_REFERENCIA_ARTICULOS):
+        return vacio.copy(), vacio.copy()
+    try:
+        ref = leer_csv_auto_sep(ARCHIVO_REFERENCIA_ARTICULOS)
+    except Exception:
+        return vacio.copy(), vacio.copy()
+
+    ref.columns = ref.columns.str.strip().str.upper()
+    if 'CLAVE' not in ref.columns or 'TIPO' not in ref.columns:
+        return vacio.copy(), vacio.copy()
+
+    ref['CLAVE'] = ref['CLAVE'].astype(str).str.strip()
+    ref['TIPO'] = ref['TIPO'].astype(str).str.strip().str.upper()
+    if 'UNIDAD' in ref.columns:
+        ref['UNIDAD'] = ref['UNIDAD'].astype(str).str.strip().str.upper()
+    else:
+        ref['UNIDAD'] = 'UND'
+    for col in ('METROS_POR_UNIDAD', 'PRECIO_REF'):
+        if col in ref.columns:
+            ref[col] = ref[col].apply(limpiar_numero).replace(0.0, np.nan)
+        else:
+            ref[col] = np.nan
+
+    ref = ref[ref['CLAVE'].ne('') & ref['CLAVE'].ne('NAN')]
+    por_codigo = ref[ref['TIPO'] == 'CODIGO'].drop_duplicates('CLAVE').set_index('CLAVE')
+    por_nombre = ref[ref['TIPO'] == 'NOMBRE'].drop_duplicates('CLAVE').set_index('CLAVE')
+    return por_codigo, por_nombre
+
+def preparar_detalle_articulos(df):
+    """
+    Agrega ARTICULO, SISTEMA, UNIDADES, UNIDAD_MEDIDA y CANT_ESTIMADA.
+
+    El sistema anterior (pedidos PV) medía los perfiles por metro lineal: 6,10 m es una
+    unidad y 18,30 m son tres. El sistema actual (COT/VTA) ya trae la unidad vendida.
+    El vidrio y las láminas se siguen contando en m², que es como se venden.
+    """
+    for col in ('ARTICULO', 'SISTEMA', 'UNIDADES', 'UNIDAD_MEDIDA', 'CANT_ESTIMADA'):
+        if col not in df.columns:
+            df[col] = np.nan
+    if 'NumeroPedido' not in df.columns:
+        return df
+
+    prefijo = df['NumeroPedido'].astype(str).str.extract(r'^([A-Za-z]+)', expand=False).str.upper()
+    es_anterior = prefijo.eq('PV')
+    df['SISTEMA'] = np.where(es_anterior, 'Sistema anterior', 'Sistema actual')
+
+    # El nombre no siempre está en la misma columna: en el sistema actual, cuando
+    # 'Articulo' viene lleno es ahí donde está el nombre y 'DescrArticulo' trae el acabado.
+    desc = df['DescrArticulo'] if 'DescrArticulo' in df.columns else pd.Series('', index=df.index)
+    art = df['Articulo'] if 'Articulo' in df.columns else pd.Series(np.nan, index=df.index)
+    df['ARTICULO'] = normalizar_nombre_articulo(art.where((~es_anterior) & art.notna(), desc))
+
+    # El sistema anterior le pega el acabado al final del nombre (... BLANCO, ... NEGRO) y el
+    # actual no, así que el mismo artículo quedaba partido en varias filas. Aquí se le quita
+    # para que un ángulo sea un solo artículo, venga del sistema que venga.
+    if 'DescrAcabado' in df.columns:
+        acabados = normalizar_nombre_articulo(df['DescrAcabado'].fillna('')).tolist()
+        df['ARTICULO'] = [
+            str(nombre)[: -len(acab)].strip()
+            if (acab and isinstance(nombre, str) and nombre.endswith(' ' + acab) and len(nombre) > len(acab) + 1)
+            else ('' if nombre is None or (isinstance(nombre, float) and pd.isna(nombre)) else str(nombre))
+            for nombre, acab in zip(df['ARTICULO'].tolist(), acabados)
+        ]
+
+    df['ARTICULO'] = df['ARTICULO'].astype('object').fillna('')
+    df.loc[df['ARTICULO'].isin(['', 'NAN', 'NAN NAN', 'NONE']), 'ARTICULO'] = 'SIN DESCRIPCION'
+
+    codigo = art.astype(str).str.strip().where(es_anterior, '')
+    if 'TMetraje' in df.columns:
+        metraje = df['TMetraje'].apply(limpiar_numero_nulo)
+    else:
+        metraje = pd.Series(np.nan, index=df.index)
+    venta = pd.to_numeric(df.get('ImporteDivisaPrincipal'), errors='coerce')
+
+    por_codigo, por_nombre = cargar_referencia_articulos()
+    if not por_codigo.empty:
+        unidad = codigo.map(por_codigo['UNIDAD'])
+        factor = pd.to_numeric(codigo.map(por_codigo['METROS_POR_UNIDAD']), errors='coerce')
+    else:
+        unidad = pd.Series(np.nan, index=df.index)
+        factor = pd.Series(np.nan, index=df.index)
+
+    unidad = unidad.where(es_anterior).fillna('UND')
+    factor = factor.where(es_anterior).fillna(1.0)
+    factor = factor.mask(~(factor > 0), 1.0)
+
+    es_m2 = unidad.eq('M2')
+    cantidad = pd.Series(np.where(es_m2, metraje, metraje / factor), index=df.index)
+
+    # Lo que no trae cantidad (sobre todo cotizaciones) se deduce del precio unitario.
+    estimada = pd.Series(False, index=df.index)
+    falta = cantidad.isna() & venta.gt(0)
+    if falta.any() and not por_nombre.empty:
+        precio = pd.to_numeric(df.loc[falta, 'ARTICULO'].map(por_nombre['PRECIO_REF']), errors='coerce')
+        deducida = (venta[falta] / precio).round()
+        deducida = deducida.where(deducida >= 1)
+        cantidad.loc[falta] = deducida
+        estimada.loc[falta] = deducida.notna()
+
+    df['UNIDADES'] = cantidad.where(es_m2, cantidad.round())
+    df['UNIDAD_MEDIDA'] = np.where(es_m2, 'm²', 'unid')
+    df['CANT_ESTIMADA'] = estimada
+    return df
 
 # -----------------------------------
 # CARGA Y LIMPIEZA DE DATA
@@ -532,6 +667,8 @@ def cargar_datos():
     
     if 'ImporteDivisaPrincipal' in df.columns:
         df['ImporteDivisaPrincipal'] = df['ImporteDivisaPrincipal'].apply(limpiar_numero)
+
+    df = preparar_detalle_articulos(df)
     
     if 'Nombre' in df.columns:
         df['Nombre'] = df['Nombre'].str.replace('SUCURSAL ', '', regex=False).str.upper().str.strip()
@@ -1202,11 +1339,12 @@ render_kpis([
 # -----------------------------------
 # PESTAÑAS DEL REPORTE
 # -----------------------------------
-tab_resumen, tab_sucursales, tab_departamentos, tab_detalle = st.tabs([
+tab_resumen, tab_sucursales, tab_departamentos, tab_detalle, tab_articulos = st.tabs([
     ":material/insights: Resumen",
     ":material/storefront: Sucursales",
     ":material/category: Departamentos",
     ":material/table_chart: Detalle y descargas",
+    ":material/inventory_2: Artículos",
 ])
 
 PALETA = [NAVY_800, COBRE_500, NAVY_400, ARENA, "#2A8C82", PIZARRA, NAVY_700, COBRE_400]
@@ -1515,3 +1653,235 @@ with tab_detalle:
         icon=":material/picture_as_pdf:",
         width="stretch"
     )
+
+
+# ===== ARTÍCULOS =====
+with tab_articulos:
+    COLS_ART = {'ARTICULO', 'UNIDADES', 'UNIDAD_MEDIDA', 'CATEGORIA'}
+
+    def abreviar(texto, largo=46):
+        texto = str(texto).title()
+        return texto if len(texto) <= largo else texto[:largo - 1].rstrip() + "…"
+
+    def formatear_entero(valor):
+        if pd.isna(valor):
+            return "—"
+        return f"{valor:,.0f}".replace(",", ".")
+
+    def formatear_metros(valor):
+        if pd.isna(valor) or valor == 0:
+            return "—"
+        return formatear_numero(valor) + " m²"
+
+    def resumen_articulos(datos, llaves=('ARTICULO',)):
+        """Agrupa ventas y unidades, separando lo que se vende por m² de lo que se vende por pieza."""
+        if datos.empty:
+            return pd.DataFrame(columns=list(llaves) + ['VENTA', 'UNIDADES', 'M2', 'PEDIDOS', 'SIN_UNIDAD', 'ESTIMADAS', 'RENGLONES'])
+        aux = datos.assign(
+            _UND=np.where(datos['UNIDAD_MEDIDA'].eq('unid'), datos['UNIDADES'], np.nan),
+            _M2=np.where(datos['UNIDAD_MEDIDA'].eq('m²'), datos['UNIDADES'], np.nan),
+            _SIN=datos['UNIDADES'].isna().astype(int),
+            _EST=datos['CANT_ESTIMADA'].fillna(False).astype(int),
+        )
+        agregados = {
+            'VENTA': ('VENTA', 'sum'),
+            'UNIDADES': ('_UND', 'sum'),
+            'M2': ('_M2', 'sum'),
+            'SIN_UNIDAD': ('_SIN', 'sum'),
+            'ESTIMADAS': ('_EST', 'sum'),
+            'RENGLONES': ('VENTA', 'size'),
+        }
+        if 'NumeroPedido' in aux.columns:
+            agregados['PEDIDOS'] = ('NumeroPedido', 'nunique')
+        tabla = aux.groupby(list(llaves), observed=True).agg(**agregados).reset_index()
+        if 'PEDIDOS' not in tabla.columns:
+            tabla['PEDIDOS'] = 0
+        return tabla.sort_values('VENTA', ascending=False)
+
+    def tabla_presentable(tabla, mostrar_categoria=False):
+        """Arma la tabla visible, con la columna de m² solo si hace falta."""
+        total = tabla['VENTA'].sum()
+        salida = pd.DataFrame()
+        salida['ARTÍCULO'] = tabla['ARTICULO'].astype(str).str.title()
+        if mostrar_categoria and 'CATEGORIA' in tabla.columns:
+            salida['CATEGORÍA'] = tabla['CATEGORIA'].astype(str).str.title()
+        unidades = tabla['UNIDADES'].where(tabla['UNIDADES'] > 0)
+        # El asterisco solo cuando una parte apreciable de la cantidad se dedujo del precio;
+        # marcar un renglón suelto entre cientos no aportaría nada.
+        renglones = tabla['RENGLONES'].replace(0, np.nan)
+        peso_estimado = (tabla['ESTIMADAS'] / renglones).fillna(0.0)
+        salida['UNIDADES'] = [
+            formatear_entero(u) + ("*" if p >= 0.10 else "")
+            for u, p in zip(unidades, peso_estimado)
+        ]
+        if (tabla['M2'].fillna(0) > 0).any():
+            salida['M² VENDIDOS'] = tabla['M2'].apply(formatear_metros)
+        salida['VENTA'] = tabla['VENTA'].apply(formatear_moneda)
+        salida['% DEL TOTAL'] = [
+            formatear_porcentaje(v / total * 100 if total > 0 else 0.0) for v in tabla['VENTA']
+        ]
+        salida['PEDIDOS'] = tabla['PEDIDOS'].apply(formatear_entero)
+        return salida
+
+    def excel_articulos(tabla):
+        salida = io.BytesIO()
+        export = tabla.rename(columns={
+            'ARTICULO': 'ARTICULO', 'CATEGORIA': 'CATEGORIA', 'VENTA': 'VENTA',
+            'UNIDADES': 'UNIDADES', 'M2': 'M2 VENDIDOS', 'PEDIDOS': 'PEDIDOS',
+            'SIN_UNIDAD': 'RENGLONES SIN UNIDAD', 'ESTIMADAS': 'RENGLONES ESTIMADOS',
+            'RENGLONES': 'RENGLONES TOTALES',
+        })
+        with pd.ExcelWriter(salida, engine='openpyxl') as writer:
+            export.to_excel(writer, index=False, sheet_name='Articulos')
+            hoja = writer.sheets['Articulos']
+            for fila in range(2, len(export) + 2):
+                for letra in ('C', 'D', 'E'):
+                    hoja[f'{letra}{fila}'].number_format = '#,##0.00'
+        return salida.getvalue()
+
+    if not COLS_ART.issubset(df_filtrado.columns) or df_filtrado.empty:
+        estado_vacio("No hay detalle de artículos para los filtros seleccionados.")
+    else:
+        # Se incluyen las notas de crédito (montos negativos) para que el total de esta
+        # sección cuadre exactamente con el KPI de Ventas Totales.
+        base_art = df_filtrado[df_filtrado['VENTA'].notna()].copy()
+
+        if base_art.empty:
+            estado_vacio("No hay artículos con venta en el periodo seleccionado.")
+        else:
+            resumen_total = resumen_articulos(base_art)
+            resumen_total = resumen_total[resumen_total['VENTA'] != 0]
+            venta_art = resumen_total['VENTA'].sum()
+            total_unidades = resumen_total['UNIDADES'].sum()
+            total_m2 = resumen_total['M2'].sum()
+            renglones_sin = int(resumen_total['SIN_UNIDAD'].sum())
+            venta_sin = float(base_art.loc[base_art['UNIDADES'].isna(), 'VENTA'].sum())
+            lider = resumen_total.iloc[0]
+
+            # ---------- KPIs ----------
+            tarjetas = [
+                kpi_card(0, "ARTÍCULOS DISTINTOS", formatear_entero(len(resumen_total)), "inventario",
+                         f"En {rango_meses(meses_sel)} de {año_sel}"),
+                kpi_card(1, "UNIDADES VENDIDAS", formatear_entero(total_unidades), "ventas",
+                         "Piezas, perfiles y kits"),
+                kpi_card(2, "M² VENDIDOS", formatear_metros(total_m2), "m2",
+                         "Vidrio, espejos y láminas"),
+                kpi_card(3, "ARTÍCULO LÍDER", abreviar(lider['ARTICULO'], 30), "avance",
+                         f"<b>{formatear_moneda(lider['VENTA'])}</b> en ventas", valor_pequeno=True),
+            ]
+            render_kpis(tarjetas)
+
+            # ---------- Vista 1: top del periodo ----------
+            col_g, col_t = st.columns([1, 1], gap="medium")
+
+            with col_g:
+                with st.container(key="cc-card-art-top"):
+                    cuantos = st.selectbox("Cuántos mostrar", [10, 15, 20, 30], index=1,
+                                           key="art_top_n", label_visibility="collapsed")
+                    top = resumen_total.head(int(cuantos)).iloc[::-1]
+                    peso = top['VENTA'].sum() / venta_art * 100 if venta_art > 0 else 0.0
+                    titulo_tarjeta(
+                        f"Top {int(cuantos)} artículos del periodo",
+                        f"Concentran <b>{formatear_porcentaje(peso)}</b> de la venta filtrada",
+                    )
+                    etiquetas = [
+                        (formatear_entero(u) + " unid") if u and u > 0 else
+                        (formatear_metros(m) if m and m > 0 else "—")
+                        for u, m in zip(top['UNIDADES'], top['M2'])
+                    ]
+                    fig = go.Figure(go.Bar(
+                        x=top['VENTA'], y=[abreviar(a, 40) for a in top['ARTICULO']], orientation="h",
+                        marker=dict(color=NAVY_800, cornerradius=5),
+                        text=[formatear_moneda(v) for v in top['VENTA']], textposition="outside",
+                        textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
+                        customdata=np.stack([etiquetas, top['PEDIDOS']], axis=-1),
+                        hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<br>Cantidad: %{customdata[0]}<br>Pedidos: %{customdata[1]}<extra></extra>",
+                    ))
+                    fig.update_xaxes(showgrid=True, gridcolor=DIVISOR, tickprefix="$ ")
+                    fig.update_yaxes(showgrid=False)
+                    mostrar_grafico(estilo_figura(fig, max(320, 26 * len(top) + 110), leyenda=False), "graf_art_top")
+
+            with col_t:
+                with st.container(key="cc-card-art-cat"):
+                    por_cat = resumen_articulos(base_art, llaves=('CATEGORIA',))
+                    por_cat = por_cat[por_cat['VENTA'] != 0].head(12)
+                    titulo_tarjeta(
+                        "Venta por categoría",
+                        f"<b>{len(resumen_articulos(base_art, llaves=('CATEGORIA',)))}</b> categorías con venta en el periodo",
+                    )
+                    if por_cat.empty:
+                        estado_vacio("No hay categorías con venta en el periodo.")
+                    else:
+                        orden_cat = por_cat.iloc[::-1]
+                        fig = go.Figure(go.Bar(
+                            x=orden_cat['VENTA'], y=[abreviar(c, 34) for c in orden_cat['CATEGORIA']],
+                            orientation="h", marker=dict(color=COBRE_500, cornerradius=5),
+                            text=[formatear_moneda(v) for v in orden_cat['VENTA']], textposition="outside",
+                            textfont=dict(color=TEXTO_SUAVE, size=11), cliponaxis=False,
+                            hovertemplate="<b>%{y}</b><br>Venta: $ %{x:,.2f}<extra></extra>",
+                        ))
+                        fig.update_xaxes(showgrid=True, gridcolor=DIVISOR, tickprefix="$ ")
+                        fig.update_yaxes(showgrid=False)
+                        mostrar_grafico(estilo_figura(fig, max(320, 26 * len(orden_cat) + 110), leyenda=False), "graf_art_cat")
+
+            # ---------- Vista 2: artículos dentro de una categoría ----------
+            with st.container(key="cc-card-art-detalle"):
+                titulo_tarjeta(
+                    "Artículos vendidos por categoría",
+                    "Elige una categoría para ver qué se vendió dentro de ella",
+                )
+                cats = resumen_articulos(base_art, llaves=('CATEGORIA',))
+                opciones = ["TODAS LAS CATEGORÍAS"] + [str(c) for c in cats['CATEGORIA']]
+                col_sel, col_bus = st.columns([1, 1], gap="medium")
+                with col_sel:
+                    cat_sel = st.selectbox("Categoría", opciones, key="art_categoria")
+                with col_bus:
+                    busqueda = st.text_input("Buscar artículo", key="art_busqueda",
+                                             placeholder="Ej: angulo, vidrio, cerradura...")
+
+                detalle_base = base_art if cat_sel == "TODAS LAS CATEGORÍAS" else \
+                    base_art[base_art['CATEGORIA'].astype(str) == cat_sel]
+
+                llaves = ('ARTICULO', 'CATEGORIA') if cat_sel == "TODAS LAS CATEGORÍAS" else ('ARTICULO',)
+                detalle = resumen_articulos(detalle_base, llaves=llaves)
+                detalle = detalle[detalle['VENTA'] != 0]
+
+                if busqueda.strip():
+                    patron = normalizar_texto(busqueda)
+                    detalle = detalle[detalle['ARTICULO'].astype(str).str.contains(patron, case=False, na=False, regex=False)]
+
+                if detalle.empty:
+                    estado_vacio("Ningún artículo coincide con la búsqueda en esta categoría.")
+                else:
+                    resumen_linea = (
+                        f"<b>{formatear_entero(len(detalle))}</b> artículos · "
+                        f"<b>{formatear_moneda(detalle['VENTA'].sum())}</b> en ventas"
+                    )
+                    st.markdown(html_limpio(f'<p class="cc-card-sub">{resumen_linea}</p>'), unsafe_allow_html=True)
+                    st.dataframe(
+                        tabla_presentable(detalle, mostrar_categoria=(cat_sel == "TODAS LAS CATEGORÍAS")),
+                        width="stretch", height=460, hide_index=True,
+                    )
+
+                    notas = []
+                    if int(detalle['ESTIMADAS'].sum()) > 0:
+                        notas.append("Las cantidades con * traen una parte deducida del precio unitario del artículo, porque el sistema no registró la cantidad en esos renglones.")
+                    if renglones_sin > 0:
+                        notas.append(
+                            f"Quedan {formatear_entero(renglones_sin)} renglones sin cantidad "
+                            f"({formatear_moneda(venta_sin)}): son productos a medida y kits valorados, "
+                            "que no tienen un precio unitario fijo con el cual deducirla."
+                        )
+                    notas.append("El vidrio, los espejos y las láminas se cuentan en m², que es como se venden. El resto va en piezas: un perfil de 6,10 m cuenta como una unidad.")
+                    for nota in notas:
+                        estado_vacio(nota)
+
+                    st.download_button(
+                        label="Descargar artículos en Excel",
+                        data=excel_articulos(detalle),
+                        file_name=f"Articulos_{año_sel}_{cat_sel.replace(' ', '_')[:30]}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                        icon=":material/download:",
+                        key="descarga_articulos",
+                    )
