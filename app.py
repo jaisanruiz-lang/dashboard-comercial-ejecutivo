@@ -981,7 +981,34 @@ departamentos_sel = st.sidebar.multiselect(
     placeholder="Seleccione Departamentos..."
 )
 
-if not meses_sel or not sucursal_sel or not departamentos_sel:
+# Área comercial (AREAS_RETAIL_2026.xlsx), en el orden del archivo y "Sin área" al final.
+mapa_areas_filtro = cargar_areas()
+def area_de(categorias):
+    """Área de cada categoría (las categorías ya vienen normalizadas)."""
+    return pd.Series(categorias, dtype=object).astype(str).map(mapa_areas_filtro).fillna(SIN_AREA).values
+
+areas_en_data = set(df['AREA'].astype(str).unique()) if 'AREA' in df.columns else set()
+todas_areas = [a for a in dict.fromkeys(mapa_areas_filtro.values()) if a in areas_en_data and a != SIN_AREA]
+todas_areas += sorted(a for a in areas_en_data if a not in todas_areas and a != SIN_AREA)
+if SIN_AREA in areas_en_data:
+    todas_areas.append(SIN_AREA)
+
+areas_sel = st.sidebar.multiselect(
+    "Áreas",
+    options=todas_areas,
+    default=todas_areas,
+    placeholder="Seleccione Áreas...",
+) if todas_areas else []
+# Si se eligen todas las áreas no se filtra nada (así no se pierde ninguna venta).
+filtrar_area = bool(todas_areas) and set(areas_sel) != set(todas_areas)
+
+def en_areas(categorias):
+    """True para las categorías que pertenecen a las áreas elegidas."""
+    if not filtrar_area:
+        return np.ones(len(categorias), dtype=bool)
+    return np.isin(area_de(categorias), list(areas_sel))
+
+if not meses_sel or not sucursal_sel or not departamentos_sel or (todas_areas and not areas_sel):
     render_kpis([
         kpi_card(0, "Ventas totales", "$ 0,00", "ventas", "Sin datos para mostrar", destacado=True),
         kpi_card(1, "Meta fijada", "$ 0,00", "meta", "Sin datos para mostrar"),
@@ -989,14 +1016,16 @@ if not meses_sel or not sucursal_sel or not departamentos_sel:
         kpi_card(3, "Eficiencia exhibición frontal (venta/m²)", "$ 0,00", "m2", "Sin datos para mostrar"),
         kpi_card(4, "Cobertura de inventario", "Sin data de inventario", "inventario", "Sin datos para mostrar", valor_pequeno=True),
     ])
-    st.warning("Debes seleccionar al menos un Mes, una Sucursal y un Departamento en la barra lateral para poder generar el reporte.", icon=":material/filter_alt:")
+    st.warning("Debes seleccionar al menos un Mes, una Sucursal, un Departamento y un Área en la barra lateral para poder generar el reporte.", icon=":material/filter_alt:")
     st.stop()
 
 mask_mes = df['MES'].astype(str).isin(meses_sel)
 mask_sucursal = df['SUCURSAL'].astype(str).isin(sucursal_sel)
 mask_depto = df['DEPARTAMENTO'].astype(str).isin(departamentos_sel)
 
-mask_comun = mask_mes & mask_sucursal & mask_depto
+mask_area = pd.Series(en_areas(df['CATEGORIA']), index=df.index) if 'CATEGORIA' in df.columns else True
+
+mask_comun = mask_mes & mask_sucursal & mask_depto & mask_area
 df_filtrado = df[(df['AÑO'] == int(año_sel)) & mask_comun]
 
 # -------------------------------------------------------------------------
@@ -1046,7 +1075,8 @@ if not df_meta_csv.empty and not df_pct_csv.empty:
         
         df_p_fil = df_p_calc[
             (df_p_calc['SUCURSAL'].isin(sucursales_up)) &
-            (df_p_calc['DEPARTAMENTO'].isin(departamentos_sel))
+            (df_p_calc['DEPARTAMENTO'].isin(departamentos_sel)) &
+            (en_areas(df_p_calc['CATEGORIA']))
         ].copy()
         
         lista_metas = []
@@ -1091,6 +1121,8 @@ mes_inventario = None
 
 if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.columns and 'MES' in df_inv.columns:
     mask_inv_comun = (df_inv['AÑO'] == int(año_sel)) & (df_inv['DEPARTAMENTO'].isin(departamentos_sel))
+    if 'CATEGORIA' in df_inv.columns:
+        mask_inv_comun = mask_inv_comun & en_areas(df_inv['CATEGORIA'])
     df_inv_base = df_inv[mask_inv_comun]
     meses_validos_inv = [m for m in orden_meses if m in meses_sel and m in df_inv_base['MES'].unique()]
     
@@ -1112,7 +1144,7 @@ if not df_inv.empty and 'AÑO' in df_inv.columns and 'DEPARTAMENTO' in df_inv.co
             
         frames_ant = []
         for a_ant, m_ant in meses_para_ventas:
-            frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel))]
+            frame_ventas = df[(df['AÑO'] == a_ant) & (df['MES'] == m_ant) & (df['DEPARTAMENTO'].isin(departamentos_sel)) & mask_area]
             frames_ant.append(frame_ventas)
         
         if frames_ant:
@@ -1130,6 +1162,8 @@ else:
 df_m2_sel = pd.DataFrame()
 if not df_m2.empty and 'DEPARTAMENTO' in df_m2.columns:
     df_m2_sel = df_m2[df_m2['DEPARTAMENTO'].isin(departamentos_sel)].copy()
+    if 'CATEGORIA' in df_m2_sel.columns:
+        df_m2_sel = df_m2_sel[en_areas(df_m2_sel['CATEGORIA'])]
 
 if not df_filtrado.empty and 'DEPARTAMENTO' in df_filtrado.columns and 'CATEGORIA' in df_filtrado.columns:
     tabla_actual = df_filtrado.groupby(['DEPARTAMENTO', 'CATEGORIA'], observed=True)['VENTA'].sum().reset_index()
