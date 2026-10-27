@@ -110,6 +110,25 @@ st.markdown("""
     .cc-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin: 4px 0 18px 0; }
     @media (max-width: 1200px) { .cc-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
     @media (max-width: 760px)  { .cc-kpis { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
+    /* Fila global de 6 tarjetas. Se decide por el ancho real del reporte (con o sin panel
+       lateral): 6 en una fila si caben, si no 2 filas de 3, y 1 por fila en el teléfono. */
+    .cc-kpis-wrap { container: kpifila / inline-size; }
+    .cc-kpis.seis { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+    .cc-kpis.seis .cc-kpi { padding: 15px 15px 13px 15px; container-type: inline-size; }
+    .cc-kpis.seis .cc-kpi-head { align-items: flex-start; min-height: 44px; }
+    .cc-kpis.seis .cc-kpi-label { font-size: 11px; letter-spacing: .05em; }
+    .cc-kpis.seis .cc-kpi-value { font-size: clamp(17px, 11.5cqi, 25px); }
+    .cc-kpis.seis .cc-kpi-value.pequeno { font-size: 16px; }
+    .cc-kpis.seis .cc-kpi-foot { font-size: 12px; }
+    .cc-kpis.seis .cc-pill { white-space: nowrap; }
+    @container kpifila (max-width: 1140px) {
+        .cc-kpis.seis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+        .cc-kpis.seis .cc-kpi-head { min-height: 0; align-items: center; }
+        .cc-kpis.seis .cc-kpi-value { font-size: clamp(18px, 9cqi, 26px); }
+    }
+    @container kpifila (max-width: 620px) {
+        .cc-kpis.seis { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+    }
     .cc-kpi {
         position: relative; background: var(--surface); border: 1px solid var(--border);
         border-radius: 12px; padding: 16px 18px 14px 18px; box-shadow: var(--shadow-1);
@@ -367,6 +386,7 @@ ICONOS = {
     "meta": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>',
     "avance": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M16 3h5v5"/></svg>',
     "m2": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>',
+    "ticket": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18l-2.5-1.5L14 21l-2-1.5-2 1.5-2.5-1.5L5 21Z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>',
     "inventario": '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
 }
 
@@ -400,7 +420,11 @@ def kpi_card(indice, etiqueta, valor, icono, pie_html="", barra=None, destacado=
     """
 
 def render_kpis(tarjetas):
-    st.markdown(html_limpio('<div class="cc-kpis">' + "".join(tarjetas) + '</div>'), unsafe_allow_html=True)
+    if len(tarjetas) == 6:
+        html = '<div class="cc-kpis-wrap"><div class="cc-kpis seis">' + "".join(tarjetas) + '</div></div>'
+    else:
+        html = '<div class="cc-kpis">' + "".join(tarjetas) + '</div>'
+    st.markdown(html_limpio(html), unsafe_allow_html=True)
 
 def titulo_tarjeta(titulo, subtitulo=""):
     sub = f'<p class="cc-card-sub">{subtitulo}</p>' if subtitulo else ""
@@ -1015,6 +1039,7 @@ if not meses_sel or not sucursal_sel or not departamentos_sel or (todas_areas an
         kpi_card(2, "Porcentaje de avance", "0,00 %", "avance", "Sin datos para mostrar", barra=(0, COBRE_500)),
         kpi_card(3, "Eficiencia exhibición frontal (venta/m²)", "$ 0,00", "m2", "Sin datos para mostrar"),
         kpi_card(4, "Cobertura de inventario", "Sin data de inventario", "inventario", "Sin datos para mostrar", valor_pequeno=True),
+        kpi_card(5, "Ticket promedio", "$ 0,00", "ticket", "Sin datos para mostrar"),
     ])
     st.warning("Debes seleccionar al menos un Mes, una Sucursal, un Departamento y un Área en la barra lateral para poder generar el reporte.", icon=":material/filter_alt:")
     st.stop()
@@ -1713,6 +1738,21 @@ metas_mes = metas_mes.reindex(meses_en_orden, fill_value=0.0)
 meses_con_venta = [m for m in meses_en_orden if ventas_mes[m] > 0]
 venta_año_anterior = df[(df['AÑO'] == int(año_sel) - 1) & mask_comun & df['MES'].astype(str).isin(meses_con_venta)]['VENTA'].sum()
 
+# --- Ticket promedio = venta total / pedidos (facturas) únicos con venta ---
+def contar_transacciones(datos):
+    """Pedidos únicos (NumeroPedido) cuya venta neta es positiva: una transacción por factura."""
+    if datos.empty or 'NumeroPedido' not in datos.columns:
+        return 0
+    por_pedido = datos.groupby(datos['NumeroPedido'].astype(str))['VENTA'].sum()
+    return int((por_pedido > 0).sum())
+
+transacciones = contar_transacciones(df_filtrado)
+ticket_promedio = total_ventas / transacciones if transacciones > 0 else 0.0
+
+datos_año_anterior = df[(df['AÑO'] == int(año_sel) - 1) & mask_comun & df['MES'].astype(str).isin(meses_con_venta)]
+transacciones_ant = contar_transacciones(datos_año_anterior)
+ticket_anterior = venta_año_anterior / transacciones_ant if transacciones_ant > 0 else 0.0
+
 # --- Encabezado con la conclusión del periodo ---
 if meta_dinamica_total > 0:
     diferencia_meta = total_ventas - meta_dinamica_total
@@ -1754,6 +1794,18 @@ if mes_inventario:
 else:
     pie_cobertura = "Sin inventario para los meses elegidos"
 
+if transacciones > 0 and ticket_anterior > 0:
+    var_ticket = (ticket_promedio / ticket_anterior - 1) * 100
+    clase_tk = "ok" if var_ticket >= 0 else "bajo"
+    flecha_tk = "▲" if var_ticket >= 0 else "▼"
+    pedidos_txt = f"{transacciones:,}".replace(",", ".")
+    pie_ticket = (f'<span class="cc-pill {clase_tk}">{flecha_tk} {formatear_porcentaje(abs(var_ticket))}</span> '
+                  f'vs. {int(año_sel) - 1} · {pedidos_txt} pedidos')
+elif transacciones > 0:
+    pie_ticket = f"{transacciones:,} pedidos en el periodo".replace(",", ".")
+else:
+    pie_ticket = "Sin pedidos en el periodo"
+
 render_kpis([
     kpi_card(0, "Ventas totales", formatear_moneda(total_ventas), "ventas", pie_ventas, destacado=True),
     kpi_card(1, "Meta fijada", formatear_moneda(meta_dinamica_total), "meta", pie_meta),
@@ -1762,6 +1814,7 @@ render_kpis([
     kpi_card(3, "Eficiencia exhibición frontal (venta/m²)", formatear_moneda(eficiencia_total), "m2", pie_m2),
     kpi_card(4, "Cobertura de inventario", formatear_cobertura(total_g_cobertura), "inventario", pie_cobertura,
              valor_pequeno=pd.isna(total_g_cobertura)),
+    kpi_card(5, "Ticket promedio", formatear_moneda(ticket_promedio), "ticket", pie_ticket),
 ])
 
 # -----------------------------------
