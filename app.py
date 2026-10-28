@@ -1826,10 +1826,16 @@ VISTAS = {
     "Resumen": ":material/insights: Resumen",
     "Sucursales": ":material/storefront: Sucursales",
     "Departamentos": ":material/category: Departamentos",
-    "Detalle": ":material/table_chart: Detalle y descargas",
     "Articulos": ":material/inventory_2: Artículos",
     "Areas": ":material/workspaces: Áreas",
 }
+
+# "Detalle y descargas" ya no es una pestaña (ahora está al final de Departamentos):
+# si alguien la tenía abierta, se limpia para que no quede apuntando a una vista que no existe.
+if st.session_state.get("cc_vista") == "Detalle":
+    del st.session_state["cc_vista"]
+if st.session_state.get("cc_vista_previa") == "Detalle":
+    st.session_state["cc_vista_previa"] = "Departamentos"
 
 with st.container(key="cc-nav"):
     vista = st.segmented_control(
@@ -2098,9 +2104,10 @@ if vista == "Departamentos":
             else:
                 estado_vacio("No hay ventas registradas para los departamentos seleccionados.")
 
-# ===== DETALLE Y DESCARGAS =====
-if vista == "Detalle":
+# ===== DEPARTAMENTOS: DETALLE Y DESCARGAS (debajo de las gráficas) =====
+if vista == "Departamentos":
     st.markdown(html_limpio(f"""
+        <div class="cc-section"><span class="cc-tri"></span><h3>Detalle por departamento y categoría</h3></div>
         <div class="cc-legend">
             <span><i style="background:{COBRE_100}; border:1px solid {COBRE_200}"></i>Total por departamento</span>
             <span><i style="background:{NAVY_800}"></i>Total general</span>
