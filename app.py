@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportes import SECCIONES as SECCIONES_REPORTE, generar_pdf_completo, generar_excel_completo
 
 # -----------------------------------
 # CONFIGURACION DE LA PAGINA Y ESTILOS CSS
@@ -1828,6 +1829,7 @@ VISTAS = {
     "Departamentos": ":material/category: Departamentos",
     "Articulos": ":material/inventory_2: Artículos",
     "Areas": ":material/workspaces: Áreas",
+    "Reportes": ":material/description: Reportes",
 }
 
 # "Detalle y descargas" ya no es una pestaña (ahora está al final de Departamentos):
@@ -2156,7 +2158,7 @@ if vista == "Departamentos":
 
 
 # ===== FUNCIONES COMUNES DE ARTÍCULOS Y ÁREAS =====
-if vista in ("Articulos", "Areas"):
+if vista in ("Articulos", "Areas", "Reportes"):
     COLS_ART = {'ARTICULO', 'UNIDADES', 'UNIDAD_MEDIDA', 'CATEGORIA'}
 
     def abreviar(texto, largo=46):
@@ -2594,3 +2596,200 @@ if vista == "Areas":
                         icon=":material/download:",
                         key="descarga_areas",
                     )
+
+
+# ===== REPORTES (PDF completo con gráficas + Excel con todas las tablas) =====
+def _texto_plano(html):
+    return re.sub(r"<[^>]+>", "", str(html)).replace("&nbsp;", " ").strip()
+
+def construir_datos_reporte():
+    """Reúne, con los filtros actuales, los mismos números de cada pestaña para el reporte."""
+    base = df_filtrado[df_filtrado['VENTA'].notna()].copy() if not df_filtrado.empty else df_filtrado.copy()
+    if 'AREA' not in base.columns:
+        base['AREA'] = SIN_AREA
+
+    # --- Filtros ---
+    def lista_o_todas(sel, todas, nombre):
+        if set(sel) == set(todas):
+            return f"Todas ({len(todas)})" if nombre != "departamentos" else f"Todos ({len(todas)})"
+        return ", ".join(str(x).title() for x in sel)
+    try:
+        from zoneinfo import ZoneInfo
+        ahora = pd.Timestamp.now(tz=ZoneInfo("America/Caracas"))
+    except Exception:
+        ahora = pd.Timestamp.now()
+    filtros = {
+        "año": int(año_sel),
+        "meses": rango_meses(meses_sel) + (f" ({', '.join(m.title() for m in meses_en_orden)})" if 1 < len(meses_en_orden) < 12 else ""),
+        "sucursales": lista_o_todas(sucursal_sel, todas_sucursales, "sucursales"),
+        "departamentos": lista_o_todas(departamentos_sel, todos_departamentos, "departamentos"),
+        "areas": lista_o_todas(areas_sel, todas_areas, "areas") if todas_areas else "—",
+        "generado": ahora.strftime("%d/%m/%Y %I:%M %p"),
+        "fuente": "Respaldo del repositorio (no se pudo leer Google Drive)" if errores_carga else "Google Drive (base actual)",
+    }
+
+    # --- KPIs ---
+    pie_av = _texto_plano(f'{texto_av}')
+    if venta_año_anterior > 0:
+        var = (total_ventas / venta_año_anterior - 1) * 100
+        pie_v = f"{'+' if var >= 0 else '−'}{formatear_porcentaje(abs(var))} vs. mismo periodo {int(año_sel) - 1}"
+    else:
+        pie_v = "Periodo y filtros seleccionados"
+    pedidos_fmt = f"{transacciones:,}".replace(",", ".")
+    if transacciones > 0 and ticket_anterior > 0:
+        var_t = (ticket_promedio / ticket_anterior - 1) * 100
+        pie_t = f"{'+' if var_t >= 0 else '−'}{formatear_porcentaje(abs(var_t))} vs. {int(año_sel) - 1} · {pedidos_fmt} pedidos"
+    else:
+        pie_t = f"{pedidos_fmt} pedidos"
+    kpis = {
+        "ventas": float(total_ventas), "meta": float(meta_dinamica_total), "avance": float(avance_general),
+        "eficiencia": float(eficiencia_total), "cobertura": None if pd.isna(total_g_cobertura) else float(total_g_cobertura),
+        "cobertura_txt": formatear_cobertura(total_g_cobertura), "ticket": float(ticket_promedio), "transacciones": int(transacciones),
+        "pie_ventas": pie_v, "pie_meta": _texto_plano(pie_meta), "pie_avance": pie_av, "pie_eficiencia": pie_m2,
+        "pie_cobertura": pie_cobertura, "pie_ticket": pie_t, "conclusion": _texto_plano(conclusion),
+    }
+
+    # --- Resumen ---
+    mes = pd.DataFrame({"MES": meses_en_orden, "VENTA": ventas_mes.values, "META": metas_mes.values})
+    mes["AVANCE"] = np.where(mes["META"] > 0, mes["VENTA"] / mes["META"].where(mes["META"] > 0, 1) * 100, np.nan)
+    mix = ventas_suc.reindex(sucursales_en_orden, fill_value=0.0)
+    mix = mix[mix > 0]
+    mix = pd.DataFrame({"SUCURSAL": mix.index, "VENTA": mix.values})
+    mix["PESO"] = mix["VENTA"] / mix["VENTA"].sum() * 100 if not mix.empty else 0.0
+    top_cat = tabla_base[tabla_base['VENTA'] > 0].sort_values('VENTA', ascending=False).head(10) if not tabla_base.empty else pd.DataFrame()
+    if not top_cat.empty:
+        top_cat = top_cat[['CATEGORIA', 'DEPARTAMENTO', 'VENTA', 'META', 'AVANCE']].astype({'CATEGORIA': str, 'DEPARTAMENTO': str})
+    else:
+        top_cat = pd.DataFrame(columns=['CATEGORIA', 'DEPARTAMENTO', 'VENTA', 'META', 'AVANCE'])
+
+    # --- Sucursales ---
+    suc_venta = [s for s in sucursales_en_orden if ventas_suc.get(s, 0.0) > 0]
+    t_suc = pd.DataFrame({"SUCURSAL": suc_venta,
+                          "VENTA": [float(ventas_suc.get(s, 0.0)) for s in suc_venta],
+                          "META": [float(metas_suc.get(s, 0.0)) for s in suc_venta]})
+    t_suc["AVANCE"] = np.where(t_suc["META"] > 0, t_suc["VENTA"] / t_suc["META"].where(t_suc["META"] > 0, 1) * 100, np.nan)
+    t_suc["PESO"] = t_suc["VENTA"] / t_suc["VENTA"].sum() * 100 if not t_suc.empty else 0.0
+    m_av = pd.DataFrame(index=suc_venta, columns=meses_en_orden, dtype=float)
+    m_ve = pd.DataFrame(index=suc_venta, columns=meses_en_orden, dtype=float)
+    largo = []
+    for s in suc_venta:
+        for m in meses_en_orden:
+            v = float(ventas_suc_mes.get((s, m), 0.0))
+            mt = float(metas_suc_mes_idx.get((s, m), 0.0)) if not metas_suc_mes_idx.empty else 0.0
+            m_ve.loc[s, m] = v
+            m_av.loc[s, m] = v / mt * 100 if (mt > 1 and m in meses_con_venta) else np.nan
+            if v != 0 or mt != 0:
+                largo.append({"SUCURSAL": s, "MES": m, "VENTA": v, "META": mt, "AVANCE": v / mt * 100 if mt > 0 else 0.0})
+    # Se quitan los meses sin venta en ninguna sucursal (p. ej. meses que aún no llegan)
+    con_dato = [m for m in meses_en_orden if m_ve[m].sum() != 0] if not m_ve.empty else []
+    m_av, m_ve = m_av[con_dato], m_ve[con_dato]
+
+    # --- Departamentos ---
+    if not subtotales.empty:
+        dep = subtotales[['DEPARTAMENTO', 'VENTA', 'META', 'AVANCE', 'EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)', 'COBERTURA']].copy()
+        dep = dep.rename(columns={'EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)': 'EFICIENCIA'})
+        dep['DEPARTAMENTO'] = dep['DEPARTAMENTO'].astype(str)
+    else:
+        dep = pd.DataFrame(columns=['DEPARTAMENTO', 'VENTA', 'META', 'AVANCE', 'EFICIENCIA', 'COBERTURA'])
+    det = tabla_final.copy() if not tabla_final.empty else pd.DataFrame()
+    if not det.empty:
+        det = det.rename(columns={'EFICIENCIA EXHIBICION FRONTAL (VENTA/M2)': 'EFICIENCIA'})
+        det['DEPARTAMENTO'] = det['DEPARTAMENTO'].astype(str)
+        det['CATEGORIA'] = det['CATEGORIA'].astype(str)
+        if 'COBERTURA' not in det.columns:
+            det['COBERTURA'] = np.nan
+        det = det[['DEPARTAMENTO', 'CATEGORIA', 'VENTA', 'META', 'AVANCE', 'EFICIENCIA', 'COBERTURA']].reset_index(drop=True)
+
+    # --- Artículos ---
+    vacio_art = pd.DataFrame(columns=['ARTICULO', 'CATEGORIA', 'AREA', 'VENTA', 'UNIDADES', 'M2', 'PEDIDOS'])
+    if COLS_ART.issubset(base.columns) and not base.empty:
+        por_art = resumen_articulos(base, llaves=('ARTICULO',))
+        por_art = por_art[por_art['VENTA'] != 0]
+        # Categoría y área de cada artículo: la de mayor venta (un nombre casi siempre tiene una sola)
+        ubic = (base.groupby(['ARTICULO', 'CATEGORIA', 'AREA'], observed=True)['VENTA'].sum().reset_index()
+                .sort_values('VENTA', ascending=False).drop_duplicates('ARTICULO')[['ARTICULO', 'CATEGORIA', 'AREA']])
+        todos = por_art.merge(ubic, on='ARTICULO', how='left')
+        todos[['CATEGORIA', 'AREA']] = todos[['CATEGORIA', 'AREA']].fillna('').astype(str)
+        cats = resumen_articulos(base, llaves=('CATEGORIA',))
+        cats = cats[cats['VENTA'] != 0].astype({'CATEGORIA': str})
+        lider = todos.iloc[0] if not todos.empty else None
+        kpis_art = {"distintos": len(todos), "unidades": float(todos['UNIDADES'].sum()), "m2": float(todos['M2'].sum()),
+                    "lider": lider['ARTICULO'] if lider is not None else "—",
+                    "lider_venta": float(lider['VENTA']) if lider is not None else 0.0,
+                    "venta": float(todos['VENTA'].sum()), "categorias": len(cats)}
+        res_area = resumen_articulos(base, llaves=('AREA',))
+        res_area = res_area[res_area['VENTA'] != 0].astype({'AREA': str})
+        res_area['ARTICULOS'] = res_area['AREA'].map(base.groupby(base['AREA'].astype(str))['ARTICULO'].nunique()).fillna(0)
+    else:
+        todos, cats, res_area = vacio_art, pd.DataFrame(columns=['CATEGORIA', 'VENTA', 'UNIDADES', 'M2', 'PEDIDOS']), \
+            pd.DataFrame(columns=['AREA', 'VENTA', 'UNIDADES', 'M2', 'ARTICULOS'])
+        kpis_art = {"distintos": 0, "unidades": 0, "m2": 0, "lider": "—", "lider_venta": 0, "venta": 0, "categorias": 0}
+
+    return {
+        "filtros": filtros,
+        "kpis": kpis,
+        "resumen": {"mes": mes, "mix": mix, "top_cat": top_cat},
+        "sucursales": {"tabla": t_suc, "matriz_avance": m_av, "matriz_venta": m_ve, "largo": pd.DataFrame(largo)},
+        "departamentos": {"tabla": dep, "detalle": det},
+        "articulos": {"kpis": kpis_art, "top": todos.head(50), "todos": todos, "categorias": cats},
+        "areas": {"resumen": res_area, "reporte": construir_tabla_areas(tabla_base)},
+        "vendedores": {"tabla": construir_tabla_vendedores(base, metas_suc_mes_cat)},
+    }
+
+if vista == "Reportes":
+    st.markdown(html_limpio("""
+        <div class="cc-section"><span class="cc-tri"></span><h3>Reporte completo</h3></div>
+        <div class="cc-note">Descarga en un solo archivo todo lo que ves en las pestañas, con los filtros que tienes aplicados en el panel izquierdo. El <b>PDF</b> trae las gráficas y, debajo de cada una, la tabla con sus números exactos (ideal para analizarlo con IA). El <b>Excel</b> trae todas las tablas, una por hoja, listas para sumar.</div>
+    """), unsafe_allow_html=True)
+
+    if df_filtrado.empty:
+        estado_vacio("No hay ventas para los filtros seleccionados.")
+    else:
+        datos_reporte = construir_datos_reporte()
+
+        with st.container(key="cc-card-reportes"):
+            titulo_tarjeta("¿Qué incluir en el PDF?", "Todas las secciones vienen marcadas. La portada con filtros e indicadores siempre va.")
+            descripciones = {
+                "resumen": "Venta vs. meta por mes, avance, mix por sucursal y top 10 categorías",
+                "sucursales": "Venta y meta por sucursal y mapa de calor por mes",
+                "departamentos": "Avance, concentración de la venta y detalle por categoría",
+                "articulos": "Top 15 en gráfica, top 12 categorías y tabla del top 50",
+                "areas": "Venta por área y reporte comercial por área",
+                "vendedores": "Avance por vendedor y reporte de vendedores por área",
+            }
+            cols_sec = st.columns(3, gap="medium")
+            secciones_sel = []
+            for i, (clave, nombre) in enumerate(SECCIONES_REPORTE.items()):
+                with cols_sec[i % 3]:
+                    if st.checkbox(nombre, value=True, key=f"rep_{clave}", help=descripciones[clave]):
+                        secciones_sel.append(clave)
+
+            sufijo = f"{año_sel}_{rango_meses(meses_sel).replace(' – ', '-').replace(' ', '_')}"
+            col_pdf, col_xls = st.columns(2, gap="medium")
+            with col_pdf:
+                secciones_pdf = list(secciones_sel)
+                st.download_button(
+                    label="Descargar reporte completo en PDF",
+                    data=lambda: generar_pdf_completo(datos_reporte, secciones_pdf),
+                    file_name=f"Reporte_Comercial_Completo_{sufijo}.pdf",
+                    mime="application/pdf",
+                    icon=":material/picture_as_pdf:",
+                    type="primary",
+                    width="stretch",
+                    disabled=not secciones_sel,
+                    on_click="ignore",
+                    key="descarga_reporte_pdf",
+                )
+                st.caption("Tarda unos segundos: arma todas las gráficas al momento de descargar.")
+            with col_xls:
+                st.download_button(
+                    label="Descargar todas las tablas en Excel",
+                    data=lambda: generar_excel_completo(datos_reporte),
+                    file_name=f"Tablas_Comerciales_{sufijo}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/table_view:",
+                    width="stretch",
+                    on_click="ignore",
+                    key="descarga_reporte_excel",
+                )
+                st.caption("Una hoja por tabla, incluida la lista completa de artículos. Sin filas de subtotales.")

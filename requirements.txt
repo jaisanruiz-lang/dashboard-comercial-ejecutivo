@@ -8,3 +8,4 @@ gdown
 reportlab
 xhtml2pdf
 jinja2
+matplotlib
