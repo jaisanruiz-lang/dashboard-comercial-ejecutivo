@@ -10,6 +10,8 @@ Arma, con los mismos números que se ven en pantalla, dos descargas:
 `datos` es un diccionario que arma app.py (ver construir_datos_reporte en app.py).
 Este archivo no usa Streamlit, así que se puede ejecutar en segundo plano.
 """
+import ctypes
+import gc
 import io
 import os
 import threading
@@ -856,7 +858,16 @@ _CANDADO = threading.Lock()  # matplotlib no es seguro si dos personas descargan
 def generar_pdf_completo(datos, secciones=None):
     """Devuelve los bytes del PDF con las secciones pedidas (por defecto, todas)."""
     with _CANDADO:
-        return _generar_pdf(datos, secciones)
+        try:
+            return _generar_pdf(datos, secciones)
+        finally:
+            # Las gráficas ocupan bastante memoria: se libera apenas termina el PDF.
+            plt.close("all")
+            gc.collect()
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
 
 
 def _generar_pdf(datos, secciones=None):

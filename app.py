@@ -6,12 +6,35 @@ import io
 import gdown
 import re
 import unicodedata
+import gc
+import ctypes
 import plotly.graph_objects as go
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportes import SECCIONES as SECCIONES_REPORTE, generar_pdf_completo, generar_excel_completo
+
+# -----------------------------------
+# MEMORIA DEL SERVIDOR
+# Streamlit atiende a cada persona en un hilo distinto y, en Linux, cada hilo puede abrir
+# su propia "arena" de memoria que casi nunca se devuelve. Con varias personas a la vez eso
+# llenaba la memoria de Streamlit Cloud y la app se caía. Se limitan las arenas a 2 y, al
+# final de cada ejecución, se devuelve al sistema la memoria que ya no se usa.
+# -----------------------------------
+try:
+    _LIBC = ctypes.CDLL("libc.so.6")
+    _LIBC.mallopt(-8, 2)  # M_ARENA_MAX = 2
+except Exception:
+    _LIBC = None
+
+def liberar_memoria():
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
 
 # -----------------------------------
 # CONFIGURACION DE LA PAGINA Y ESTILOS CSS
@@ -748,7 +771,6 @@ def descargar_ventas_drive(file_id):
 
     return pd.DataFrame(), errores
 
-@st.cache_data(ttl=300, show_spinner="Cargando base de datos de Ventas...")
 def cargar_datos():
     df, errores = descargar_ventas_drive(ID_DRIVE_VENTAS)
 
@@ -844,7 +866,7 @@ def cargar_areas():
     areas = areas[areas['CATEGORIA'].ne('')].drop_duplicates('CATEGORIA')
     return dict(zip(areas['CATEGORIA'], areas['AREA']))
 
-@st.cache_data(ttl=60)
+@st.cache_resource(ttl=300, show_spinner=False)
 def cargar_inventario():
     archivo_inv = "INVENTARIO.csv"
     if not os.path.exists(archivo_inv):
@@ -876,7 +898,9 @@ def cargar_inventario():
             
         if 'Valor' in df_inv.columns:
             df_inv['Valor'] = df_inv['Valor'].apply(limpiar_numero)
-        return df_inv
+        # Solo lo que usa el dashboard: menos memoria compartida entre todas las sesiones.
+        columnas = [c for c in ('AÑO', 'MES', 'SUCURSAL', 'DEPARTAMENTO', 'CATEGORIA', 'Valor') if c in df_inv.columns]
+        return df_inv[columnas].copy()
     except Exception:
         return pd.DataFrame()
 
@@ -900,40 +924,6 @@ def cargar_metas_y_porcentajes_estructurados():
 
     return df_meta, df_pct
 
-df, df_m2, errores_carga = cargar_datos()
-
-if df.empty:
-    st.error("No se pudo cargar la base de datos de Ventas. Revisa la conexión o el archivo.")
-    with st.expander("Ver detalle técnico del error"):
-        for err in errores_carga:
-            st.write(f"- {err}")
-    if st.button("Reintentar carga", icon=":material/refresh:", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-    st.stop()
-
-if errores_carga:
-    st.warning("No se pudo descargar Ventas desde Google Drive; se está usando el respaldo del repositorio (puede no estar actualizado).", icon=":material/cloud_off:")
-
-df_inv = cargar_inventario()
-df_meta_csv, df_pct_csv = cargar_metas_y_porcentajes_estructurados()
-
-df = df.rename(columns={
-    'ImporteDivisaPrincipal': 'VENTA',
-    'DescrLineaNegocio': 'CATEGORIA',
-    'Nombre': 'SUCURSAL'
-})
-
-if 'CATEGORIA' in df.columns:
-    df['CATEGORIA'] = df['CATEGORIA'].apply(normalizar_texto)
-    # Área comercial de cada categoría (AREAS_RETAIL_2026.xlsx).
-    df['AREA'] = df['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
-if 'Usuario' in df.columns:
-    # El sistema anterior escribe "andrea.delgado" y el actual "Andrea Delgado": se unifican.
-    df['USUARIO'] = normalizar_usuario(df['Usuario'])
-if 'DEPARTAMENTO' in df.columns:
-    df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
-
 # -----------------------------------
 # ESTRUCTURA DE ORDENAMIENTO ESTRICTO
 # -----------------------------------
@@ -950,19 +940,78 @@ orden_departamentos_base = [
     'IMPULSO', 'CERRADURAS Y CANDADOS', 'PERSIANAS Y MOSQUITEROS', 'LAMINAS'
 ]
 
-if 'DEPARTAMENTO' in df.columns:
-    otros_deps = [d for d in df['DEPARTAMENTO'].dropna().unique() if d not in orden_departamentos_base]
-    orden_departamentos = orden_departamentos_base + otros_deps
-else:
-    orden_departamentos = orden_departamentos_base
+# Columnas de ventas que usa el dashboard (las demás se descartan al cargar).
+COLUMNAS_VENTAS = ['AÑO', 'MES', 'SUCURSAL', 'DEPARTAMENTO', 'CATEGORIA', 'AREA', 'USUARIO', 'NumeroPedido',
+                   'VENTA', 'ARTICULO', 'SISTEMA', 'UNIDADES', 'UNIDAD_MEDIDA', 'CANT_ESTIMADA']
 
-if 'MES' in df.columns:
-    df['MES'] = pd.Categorical(df['MES'].astype(str).str.upper().str.strip(), categories=orden_meses, ordered=True)
-if 'SUCURSAL' in df.columns:
-    df['SUCURSAL'] = df['SUCURSAL'].where(df['SUCURSAL'].isin(orden_sucursales))
-    df['SUCURSAL'] = pd.Categorical(df['SUCURSAL'], categories=[s.upper() for s in orden_sucursales], ordered=True)
-if 'DEPARTAMENTO' in df.columns:
-    df['DEPARTAMENTO'] = pd.Categorical(df['DEPARTAMENTO'], categories=orden_departamentos, ordered=True)
+@st.cache_resource(ttl=300, show_spinner="Cargando base de datos de Ventas...")
+def cargar_base_ventas():
+    """
+    Descarga y prepara la base de ventas UNA sola vez cada 5 minutos. Todas las personas
+    conectadas comparten esta misma copia (antes cada clic de cada persona hacía su propia
+    copia y volvía a limpiar las 135.000 filas, y eso llenaba la memoria del servidor).
+    Nadie debe modificarla: el resto del código trabaja sobre copias filtradas.
+    """
+    df, df_m2, errores = cargar_datos()
+    if df.empty:
+        return df, df_m2, errores, list(orden_departamentos_base)
+
+    df = df.rename(columns={
+        'ImporteDivisaPrincipal': 'VENTA',
+        'DescrLineaNegocio': 'CATEGORIA',
+        'Nombre': 'SUCURSAL'
+    })
+
+    if 'CATEGORIA' in df.columns:
+        df['CATEGORIA'] = df['CATEGORIA'].apply(normalizar_texto)
+        # Área comercial de cada categoría (AREAS_RETAIL_2026.xlsx).
+        df['AREA'] = df['CATEGORIA'].map(cargar_areas()).fillna(SIN_AREA)
+    if 'Usuario' in df.columns:
+        # El sistema anterior escribe "andrea.delgado" y el actual "Andrea Delgado": se unifican.
+        df['USUARIO'] = normalizar_usuario(df['Usuario'])
+    if 'DEPARTAMENTO' in df.columns:
+        df['DEPARTAMENTO'] = df['DEPARTAMENTO'].apply(normalizar_texto)
+
+    if 'DEPARTAMENTO' in df.columns:
+        otros_deps = [d for d in df['DEPARTAMENTO'].dropna().unique() if d not in orden_departamentos_base]
+        orden_deps = orden_departamentos_base + otros_deps
+    else:
+        orden_deps = list(orden_departamentos_base)
+
+    if 'MES' in df.columns:
+        df['MES'] = pd.Categorical(df['MES'].astype(str).str.upper().str.strip(), categories=orden_meses, ordered=True)
+    if 'SUCURSAL' in df.columns:
+        df['SUCURSAL'] = df['SUCURSAL'].where(df['SUCURSAL'].isin(orden_sucursales))
+        df['SUCURSAL'] = pd.Categorical(df['SUCURSAL'], categories=[s.upper() for s in orden_sucursales], ordered=True)
+    if 'DEPARTAMENTO' in df.columns:
+        df['DEPARTAMENTO'] = pd.Categorical(df['DEPARTAMENTO'], categories=orden_deps, ordered=True)
+
+    df = df[[c for c in COLUMNAS_VENTAS if c in df.columns]].copy()
+    liberar_memoria()
+    return df, df_m2, errores, orden_deps
+
+_base_ventas, df_m2, errores_carga, orden_departamentos = cargar_base_ventas()
+
+if _base_ventas.empty:
+    st.error("No se pudo cargar la base de datos de Ventas. Revisa la conexión o el archivo.")
+    with st.expander("Ver detalle técnico del error"):
+        for err in errores_carga:
+            st.write(f"- {err}")
+    if st.button("Reintentar carga", icon=":material/refresh:", type="primary"):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
+    st.stop()
+
+if errores_carga:
+    st.warning("No se pudo descargar Ventas desde Google Drive; se está usando el respaldo del repositorio (puede no estar actualizado).", icon=":material/cloud_off:")
+
+# Copia liviana: comparte los datos con la base en memoria (no duplica nada) y protege
+# la base compartida si más abajo se agrega alguna columna.
+df = _base_ventas.copy(deep=False)
+
+df_inv = cargar_inventario()
+df_meta_csv, df_pct_csv = cargar_metas_y_porcentajes_estructurados()
 
 
 # -----------------------------------
@@ -2128,10 +2177,12 @@ if vista == "Departamentos":
 
     bot1, bot2 = st.columns(2)
 
-    data_excel = generar_excel_descarga_sumable(df_para_excel)
+    # Los archivos se arman solo cuando alguien hace clic (antes se generaban en cada clic
+    # de cualquier filtro y ocupaban memoria del servidor aunque nadie los descargara).
     bot1.download_button(
         label="Descargar Reporte en Excel (Sumable)",
-        data=data_excel,
+        data=lambda d=df_para_excel: generar_excel_descarga_sumable(d),
+        on_click="ignore",
         file_name=f"Reporte_Comercial_{año_sel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         icon=":material/table_view:",
@@ -2139,17 +2190,12 @@ if vista == "Departamentos":
         width="stretch"
     )
 
-    data_pdf = generar_pdf_descarga(
-        tabla_final,
-        año_sel,
-        formatear_moneda(total_ventas),
-        formatear_moneda(meta_dinamica_total),
-        formatear_porcentaje(avance_general),
-        formatear_moneda(eficiencia_total)
-    )
+    pdf_args = (tabla_final, año_sel, formatear_moneda(total_ventas), formatear_moneda(meta_dinamica_total),
+                formatear_porcentaje(avance_general), formatear_moneda(eficiencia_total))
     bot2.download_button(
         label="Descargar Reporte Completo en PDF",
-        data=data_pdf,
+        data=lambda a=pdf_args: generar_pdf_descarga(*a),
+        on_click="ignore",
         file_name=f"Reporte_Comercial_{año_sel}.pdf",
         mime="application/pdf",
         icon=":material/picture_as_pdf:",
@@ -2380,7 +2426,8 @@ if vista == "Articulos":
 
                     st.download_button(
                         label="Descargar artículos en Excel",
-                        data=excel_articulos(detalle, mostrar_categoria=(cat_sel == "TODAS LAS CATEGORÍAS")),
+                        data=lambda d=detalle, c=(cat_sel == "TODAS LAS CATEGORÍAS"): excel_articulos(d, mostrar_categoria=c),
+                        on_click="ignore",
                         file_name=f"Articulos_{año_sel}_{cat_sel.replace(' ', '_')[:30]}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch",
@@ -2483,7 +2530,8 @@ if vista == "Areas":
                 st.dataframe(estilizar_tabla_areas(tabla_areas_kpi), width="stretch", height=530, hide_index=True)
                 st.download_button(
                     label="Descargar reporte por área en Excel (Sumable)",
-                    data=generar_excel_areas(tabla_areas_kpi),
+                    data=lambda t=tabla_areas_kpi: generar_excel_areas(t),
+                    on_click="ignore",
                     file_name=f"Reporte_Comercial_por_Area_{año_sel}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     icon=":material/table_view:",
@@ -2521,7 +2569,8 @@ if vista == "Areas":
                 sufijo = "" if vend_sel == TODOS_VEND else "_" + re.sub(r'[^A-Za-z0-9]+', '_', vend_sel)[:30]
                 bot_v1.download_button(
                     label="Descargar reporte de vendedores en Excel (Sumable)",
-                    data=generar_excel_vendedores(tabla_vend_vista),
+                    data=lambda t=tabla_vend_vista: generar_excel_vendedores(t),
+                    on_click="ignore",
                     file_name=f"Reporte_Vendedores_{año_sel}{sufijo}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     icon=":material/table_view:", type="primary", width="stretch",
@@ -2529,7 +2578,8 @@ if vista == "Areas":
                 )
                 bot_v2.download_button(
                     label="Descargar reporte de vendedores en PDF",
-                    data=generar_pdf_vendedores(tabla_vend_vista, año_sel),
+                    data=lambda t=tabla_vend_vista, a=año_sel: generar_pdf_vendedores(t, a),
+                    on_click="ignore",
                     file_name=f"Reporte_Vendedores_{año_sel}{sufijo}.pdf",
                     mime="application/pdf",
                     icon=":material/picture_as_pdf:", width="stretch",
@@ -2589,7 +2639,8 @@ if vista == "Areas":
                     nombre_archivo = (cat_area_sel if cat_area_sel != TODAS_CATS else area_sel).replace(' ', '_')[:30]
                     st.download_button(
                         label="Descargar artículos del área en Excel",
-                        data=excel_articulos(detalle_area, mostrar_categoria=con_categoria),
+                        data=lambda d=detalle_area, c=con_categoria: excel_articulos(d, mostrar_categoria=c),
+                        on_click="ignore",
                         file_name=f"Areas_{año_sel}_{nombre_archivo}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch",
@@ -2793,3 +2844,6 @@ if vista == "Reportes":
                     key="descarga_reporte_excel",
                 )
                 st.caption("Una hoja por tabla, incluida la lista completa de artículos. Sin filas de subtotales.")
+
+# Al terminar cada ejecución se devuelve al sistema la memoria que ya no se usa.
+liberar_memoria()
